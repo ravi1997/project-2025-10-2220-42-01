@@ -87,6 +87,16 @@ struct Tensor {
         data.resize(size, init_val);
     }
     
+    // Constructor for 2D tensors with explicit dimensions
+    template<size_t N = NumDims>
+    requires (N == 2)
+    Tensor(std::size_t rows, std::size_t cols) : Tensor(std::array<std::size_t, 2>{rows, cols}) {}
+    
+    // Constructor for 2D tensors with explicit dimensions and initial value
+    template<size_t N = NumDims>
+    requires (N == 2)
+    Tensor(std::size_t rows, std::size_t cols, double init_val) : Tensor(std::array<std::size_t, 2>{rows, cols}, init_val) {}
+    
     
     template<typename... Args>
     requires (sizeof...(Args) == NumDims)
@@ -139,6 +149,8 @@ struct Tensor {
         }
         return data[idx];
     }
+    
+    // Fill all elements with a value
     
     static Tensor zeros(const std::array<std::size_t, NumDims>& s) {
         return Tensor(s, 0.0);
@@ -457,6 +469,7 @@ struct BatchNorm : public Layer {
     Matrix running_var;
     
     // For backward pass
+    Matrix input_cache;
     Matrix x_norm_cache;
     Matrix x_centered_cache;
     Matrix inv_std_cache;
@@ -587,6 +600,10 @@ Matrix hadamard(const Matrix& A, const Matrix& B);
 Matrix scalar_mul(const Matrix& A, double s);
 Matrix sum_rows(const Matrix& A);
 void add_rowwise_inplace(Matrix& A, const Matrix& rowvec);
+
+// Function declarations for operations used in Dense layer
+Matrix apply_activation(const Matrix& z, Activation act);
+Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
 
 // Function declarations for operations used in Dense layer
 Matrix apply_activation(const Matrix& z, Activation act);

@@ -12,8 +12,14 @@
 #include <string>
 #include <thread>
 #include <execution>
+#include <random>
+#include <array>
 
 namespace dnn {
+
+// --- Forward declarations for functions used in Dense layer ---
+Matrix apply_activation(const Matrix& z, Activation act);
+Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
 
 // --- small utils (internal) ---
 static inline bool is_finite(double x) noexcept {
@@ -38,9 +44,10 @@ static inline std::string now_time() {
     return buf;
 }
 
+
 // ---------------- Tensor Operations ----------------
 Matrix transpose(const Matrix& A) {
-    Matrix T(A.shape[1], A.shape[0]);
+    Matrix T({A.shape[1], A.shape[0]});
     for (std::size_t r = 0; r < A.shape[0]; ++r) {
         for (std::size_t c = 0; c < A.shape[1]; ++c) {
             T(c, r) = A(r, c);
@@ -54,12 +61,12 @@ Matrix matmul(const Matrix& A, const Matrix& B) {
         throw std::invalid_argument("matmul: A.cols != B.rows");
     }
     
-    Matrix C(A.shape[0], B.shape[1], 0.0);
+    Matrix C({A.shape[0], B.shape[1]}, 0.0);
     
     // Use parallel execution if enabled and matrix is large enough
-    if (Config::ENABLE_THREADING && A.shape[0] >= 100) {
+    if (Config::USE_VECTORIZATION && A.shape[0] >= 100) {
         std::vector<std::thread> threads;
-        const std::size_t num_threads = std::min(Config::MAX_THREADS, 
+        const std::size_t num_threads = std::min(Config::MAX_THREADS,
                                                 static_cast<std::size_t>(std::thread::hardware_concurrency()));
         const std::size_t rows_per_thread = A.shape[0] / num_threads;
         
@@ -114,7 +121,7 @@ Matrix add(const Matrix& A, const Matrix& B) {
         throw std::invalid_argument("add: shape mismatch");
     }
     
-    Matrix C(A.shape[0], A.shape[1]);
+    Matrix C({A.shape[0], A.shape[1]});
     for (std::size_t i = 0; i < A.size; ++i) {
         C.data[i] = A.data[i] + B.data[i];
     }
@@ -126,7 +133,7 @@ Matrix sub(const Matrix& A, const Matrix& B) {
         throw std::invalid_argument("sub: shape mismatch");
     }
     
-    Matrix C(A.shape[0], A.shape[1]);
+    Matrix C({A.shape[0], A.shape[1]});
     for (std::size_t i = 0; i < A.size; ++i) {
         C.data[i] = A.data[i] - B.data[i];
     }
@@ -138,7 +145,7 @@ Matrix hadamard(const Matrix& A, const Matrix& B) {
         throw std::invalid_argument("hadamard: mismatch");
     }
     
-    Matrix C(A.shape[0], A.shape[1]);
+    Matrix C({A.shape[0], A.shape[1]});
     for (std::size_t i = 0; i < A.size; ++i) {
         C.data[i] = A.data[i] * B.data[i];
     }
@@ -146,7 +153,7 @@ Matrix hadamard(const Matrix& A, const Matrix& B) {
 }
 
 Matrix scalar_mul(const Matrix& A, double s) {
-    Matrix C(A.shape[0], A.shape[1]);
+    Matrix C({A.shape[0], A.shape[1]});
     for (std::size_t i = 0; i < A.size; ++i) {
         C.data[i] = A.data[i] * s;
     }
@@ -154,7 +161,7 @@ Matrix scalar_mul(const Matrix& A, double s) {
 }
 
 Matrix sum_rows(const Matrix& A) {
-    Matrix v(1, A.shape[1], 0.0);
+    Matrix v({1, A.shape[1]}, 0.0);
     for (std::size_t r = 0; r < A.shape[0]; ++r) {
         for (std::size_t c = 0; c < A.shape[1]; ++c) {
             v(0, c) += A(r, c);
