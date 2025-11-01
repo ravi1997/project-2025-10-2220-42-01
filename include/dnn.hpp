@@ -1,0 +1,586 @@
+#pragma once
+// dnn.hpp — stdlib-only deep neural network (C++23)
+// Comprehensive DNN library with all standard features
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <bit>
+#include <chrono>
+#include <concepts>
+#include <coroutine>
+#include <deque>
+#include <execution>
+#include <format>
+#include <functional>
+#include <future>
+#include <initializer_list>
+#include <iterator>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <numbers>
+#include <numeric>
+#include <optional>
+#include <queue>
+#include <random>
+#include <ranges>
+#include <shared_mutex>
+#include <span>
+#include <stop_token>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <tuple>
+#include <type_traits>
+#include <unordered_map>
+#include <variant>
+#include <vector>
+
+namespace dnn {
+
+// ---------------- Configuration ----------------
+struct Config {
+    // Compile-time flags for optimization
+    static constexpr bool USE_VECTORIZATION = true;
+    static constexpr bool ENABLE_THREADING = true;
+    static constexpr bool DEBUG_MODE = false;
+    static constexpr bool ENABLE_PROFILING = false;
+    static constexpr std::size_t MAX_THREADS = 16;
+    static constexpr std::size_t CACHE_LINE_SIZE = 64;
+    
+    // Runtime configuration
+    double epsilon = 1e-8;           // Small value for numerical stability
+    double learning_rate = 0.001;    // Default learning rate
+    std::size_t batch_size = 32;     // Default batch size
+    std::size_t max_epochs = 1000;   // Maximum training epochs
+    double validation_split = 0.2;   // Validation split ratio
+    double dropout_rate = 0.0;       // Dropout rate (0.0 to 1.0)
+    bool use_batch_norm = false;     // Whether to use batch normalization
+    bool use_layer_norm = false;     // Whether to use layer normalization
+};
+
+// ---------------- Tensor ----------------
+template<std::size_t NumDims = 2>
+struct Tensor {
+    std::array<std::size_t, NumDims> shape;
+    std::vector<double> data;
+    std::size_t size;
+    
+    Tensor() : size(0) {
+        std::fill(shape.begin(), shape.end(), 0);
+    }
+    
+    explicit Tensor(const std::array<std::size_t, NumDims>& s) : shape(s) {
+        size = 1;
+        for (std::size_t dim : shape) {
+            size *= dim;
+        }
+        data.resize(size, 0.0);
+    }
+    
+    Tensor(const std::array<std::size_t, NumDims>& s, double init_val) : shape(s) {
+        size = 1;
+        for (std::size_t dim : shape) {
+            size *= dim;
+        }
+        data.resize(size, init_val);
+    }
+    
+    template<typename... Args>
+    requires (sizeof...(Args) == NumDims)
+    double& operator()(Args... indices) {
+        static_assert(sizeof...(Args) == NumDims, "Number of indices must match tensor dimensions");
+        std::array<std::size_t, NumDims> idx = {static_cast<std::size_t>(indices)...};
+        std::size_t linear_idx = 0;
+        std::size_t multiplier = 1;
+        
+        for (int i = static_cast<int>(NumDims) - 1; i >= 0; --i) {
+            if (idx[i] >= shape[i]) {
+                throw std::out_of_range("Tensor access out of bounds");
+            }
+            linear_idx += idx[i] * multiplier;
+            multiplier *= shape[i];
+        }
+        
+        return data[linear_idx];
+    }
+    
+    template<typename... Args>
+    requires (sizeof...(Args) == NumDims)
+    double operator()(Args... indices) const {
+        static_assert(sizeof...(Args) == NumDims, "Number of indices must match tensor dimensions");
+        std::array<std::size_t, NumDims> idx = {static_cast<std::size_t>(indices)...};
+        std::size_t linear_idx = 0;
+        std::size_t multiplier = 1;
+        
+        for (int i = static_cast<int>(NumDims) - 1; i >= 0; --i) {
+            if (idx[i] >= shape[i]) {
+                throw std::out_of_range("Tensor access out of bounds");
+            }
+            linear_idx += idx[i] * multiplier;
+            multiplier *= shape[i];
+        }
+        
+        return data[linear_idx];
+    }
+    
+    double& operator[](std::size_t idx) {
+        if (idx >= data.size()) {
+            throw std::out_of_range("Tensor access out of bounds");
+        }
+        return data[idx];
+    }
+    
+    double operator[](std::size_t idx) const {
+        if (idx >= data.size()) {
+            throw std::out_of_range("Tensor access out of bounds");
+        }
+        return data[idx];
+    }
+    
+    static Tensor zeros(const std::array<std::size_t, NumDims>& s) {
+        return Tensor(s, 0.0);
+    }
+    
+    static Tensor ones(const std::array<std::size_t, NumDims>& s) {
+        return Tensor(s, 1.0);
+    }
+    
+    static Tensor filled(const std::array<std::size_t, NumDims>& s, double val) {
+        return Tensor(s, val);
+    }
+    
+    static Tensor random_normal(const std::array<std::size_t, NumDims>& s, 
+                                std::mt19937& rng, 
+                                double mean = 0.0, 
+                                double stddev = 1.0) {
+        Tensor t(s);
+        std::normal_distribution<double> dist(mean, stddev);
+        for (auto& val : t.data) {
+            val = dist(rng);
+        }
+        return t;
+    }
+    
+    static Tensor random_uniform(const std::array<std::size_t, NumDims>& s, 
+                                 std::mt19937& rng, 
+                                 double min_val = -1.0, 
+                                 double max_val = 1.0) {
+        Tensor t(s);
+        std::uniform_real_distribution<double> dist(min_val, max_val);
+        for (auto& val : t.data) {
+            val = dist(rng);
+        }
+        return t;
+    }
+    
+    void fill(double val) {
+        std::fill(data.begin(), data.end(), val);
+    }
+    
+    Tensor reshape(const std::array<std::size_t, NumDims>& new_shape) const {
+        std::size_t new_size = 1;
+        for (std::size_t dim : new_shape) {
+            new_size *= dim;
+        }
+        
+        if (new_size != size) {
+            throw std::invalid_argument("Reshape dimensions don't match total size");
+        }
+        
+        Tensor result(new_shape);
+        result.data = data; // Copy the data
+        return result;
+    }
+    
+    Tensor flatten() const requires (NumDims > 1) {
+        std::array<std::size_t, 2> new_shape = {size, 1};
+        return reshape(new_shape);
+    }
+    
+    bool any_nonfinite() const noexcept {
+        for (double x : data) {
+            if (!std::isfinite(x)) return true;
+        }
+        return false;
+    }
+};
+
+// Specialize 2D tensor as Matrix for compatibility with existing code
+using Matrix = Tensor<2>;
+
+// ---------------- Activation Functions ----------------
+enum class Activation {
+    Linear,      // f(x) = x
+    ReLU,        // f(x) = max(0, x)
+    LeakyReLU,   // f(x) = x > 0 ? x : 0.01 * x
+    ELU,         // f(x) = x > 0 ? x : exp(x) - 1
+    Sigmoid,     // f(x) = 1 / (1 + exp(-x))
+    Tanh,        // f(x) = tanh(x)
+    Softmax,     // f(x_i) = exp(x_i) / sum(exp(x_j))
+    Swish,       // f(x) = x * sigmoid(x)
+    GELU,        // Gaussian Error Linear Unit
+    Softplus     // f(x) = log(1 + exp(x))
+};
+
+// ---------------- Loss Functions ----------------
+enum class LossFunction {
+    MSE,                    // Mean Squared Error
+    CrossEntropy,          // Cross Entropy (with softmax)
+    BinaryCrossEntropy,    // Binary Cross Entropy
+    Hinge,                 // Hinge loss
+    Huber,                 // Huber loss
+    KLDivergence          // Kullback-Leibler divergence
+};
+
+struct LossResult {
+    double value;
+    Matrix gradient;
+};
+
+// ---------------- Optimizer Types ----------------
+enum class OptimizerType {
+    SGD,        // Stochastic Gradient Descent
+    Adam,       // Adaptive Moment Estimation
+    RMSprop,    // Root Mean Square Propagation
+    Adagrad,    // Adaptive Gradient Algorithm
+    AdamW       // Adam with decoupled weight decay
+};
+
+// ---------------- Layer Base Class ----------------
+struct Layer {
+    std::string name;
+    bool trainable;
+    
+    explicit Layer(std::string layer_name = "layer", bool is_trainable = true) 
+        : name(std::move(layer_name)), trainable(is_trainable) {}
+    
+    virtual ~Layer() = default;
+    
+    virtual Matrix forward(const Matrix& input) = 0;
+    virtual Matrix backward(const Matrix& grad_output) = 0;
+    virtual void update_parameters(const struct Optimizer& opt) = 0;
+    virtual std::size_t get_parameter_count() const = 0;
+};
+
+// ---------------- Dense Layer ----------------
+struct Dense : public Layer {
+    std::size_t in_features, out_features;
+    Matrix weights;
+    Matrix bias;
+    Activation activation;
+    
+    // Caches for backward pass
+    Matrix input_cache;
+    Matrix pre_activation_cache;
+    Matrix post_activation_cache;
+    
+    // Optimizer state
+    Matrix weight_velocity;
+    Matrix bias_velocity;
+    Matrix weight_momentum;
+    Matrix bias_momentum;
+    Matrix weight_rms;
+    Matrix bias_rms;
+    
+    Dense(std::size_t in, std::size_t out, 
+          Activation act = Activation::ReLU, 
+          std::string layer_name = "dense")
+        : Layer(std::move(layer_name), true), 
+          in_features(in), out_features(out), activation(act),
+          weights({in, out}), bias({1, out}),
+          weight_velocity({in, out}), bias_velocity({1, out}),
+          weight_momentum({in, out}), bias_momentum({1, out}),
+          weight_rms({in, out}), bias_rms({1, out}) {
+        
+        // Xavier/Glorot initialization for better convergence
+        double limit = std::sqrt(6.0 / static_cast<double>(in + out));
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_real_distribution<double> dist(-limit, limit);
+        
+        for (auto& w : weights.data) {
+            w = dist(gen);
+        }
+        bias.fill(0.0);
+    }
+    
+    Matrix forward(const Matrix& input) override {
+        if (input.shape[1] != in_features) {
+            throw std::invalid_argument("Dense layer input dimension mismatch");
+        }
+        
+        input_cache = input;
+        Matrix z = matmul(input, weights);
+        add_rowwise_inplace(z, bias);
+        pre_activation_cache = z;
+        
+        Matrix a = apply_activation(z, activation);
+        post_activation_cache = a;
+        
+        return a;
+    }
+    
+    Matrix backward(const Matrix& grad_output) override {
+        Matrix grad_act = apply_activation_derivative(post_activation_cache, grad_output, activation);
+        
+        // Compute gradients
+        Matrix weights_t = transpose(weights);
+        Matrix grad_input = matmul(grad_act, weights_t);
+        
+        Matrix input_t = transpose(input_cache);
+        Matrix grad_weights = matmul(input_t, grad_act);
+        Matrix grad_bias = sum_rows(grad_act);
+        
+        // Store gradients for optimizer
+        weight_velocity = grad_weights;
+        bias_velocity = grad_bias;
+        
+        return grad_input;
+    }
+    
+    void update_parameters(const struct Optimizer& opt) override;
+    
+    std::size_t get_parameter_count() const override {
+        return weights.size + bias.size;
+    }
+    
+private:
+    Matrix apply_activation(const Matrix& z, Activation act);
+    Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
+};
+
+// ---------------- Convolutional Layer ----------------
+struct Conv2D : public Layer {
+    std::size_t in_channels, out_channels;
+    std::size_t kernel_height, kernel_width;
+    std::size_t stride_h, stride_w;
+    std::size_t padding_h, padding_w;
+    Activation activation;
+    
+    Matrix weights;  // (out_channels, in_channels, kernel_height, kernel_width)
+    Matrix bias;     // (out_channels)
+    
+    // Caches
+    std::vector<Matrix> input_patches;  // For backward pass
+    
+    Conv2D(std::size_t in_ch, std::size_t out_ch,
+           std::size_t kh, std::size_t kw,
+           std::size_t s_h = 1, std::size_t s_w = 1,
+           std::size_t p_h = 0, std::size_t p_w = 0,
+           Activation act = Activation::ReLU,
+           std::string layer_name = "conv2d")
+        : Layer(std::move(layer_name), true),
+          in_channels(in_ch), out_channels(out_ch),
+          kernel_height(kh), kernel_width(kw),
+          stride_h(s_h), stride_w(s_w),
+          padding_h(p_h), padding_w(p_w), activation(act),
+          weights({out_ch, in_ch * kh * kw}),  // Flattened for efficient computation
+          bias({1, out_ch}) {
+        
+        // Initialize weights with He initialization for ReLU networks
+        double stddev = std::sqrt(2.0 / static_cast<double>(in_ch * kh * kw));
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::normal_distribution<double> dist(0.0, stddev);
+        
+        for (auto& w : weights.data) {
+            w = dist(gen);
+        }
+        bias.fill(0.0);
+    }
+    
+    Matrix forward(const Matrix& input) override;
+    Matrix backward(const Matrix& grad_output) override;
+    void update_parameters(const struct Optimizer& opt) override;
+    std::size_t get_parameter_count() const override {
+        return weights.size + bias.size;
+    }
+};
+
+// ---------------- Pooling Layer ----------------
+struct MaxPool2D : public Layer {
+    std::size_t pool_height, pool_width;
+    std::size_t stride_h, stride_w;
+    
+    // Caches
+    Matrix input_cache;
+    Matrix mask_cache;  // To store where max values came from
+    
+    MaxPool2D(std::size_t ph, std::size_t pw,
+              std::size_t s_h = 1, std::size_t s_w = 1,
+              std::string layer_name = "maxpool2d")
+        : Layer(std::move(layer_name), false),
+          pool_height(ph), pool_width(pw),
+          stride_h(s_h), stride_w(s_w) {}
+    
+    Matrix forward(const Matrix& input) override;
+    Matrix backward(const Matrix& grad_output) override;
+    void update_parameters(const struct Optimizer& opt) override {}
+    std::size_t get_parameter_count() const override { return 0; }
+};
+
+// ---------------- Dropout Layer ----------------
+struct Dropout : public Layer {
+    double rate;
+    std::vector<bool> mask_cache;
+    
+    explicit Dropout(double dropout_rate = 0.5, std::string layer_name = "dropout")
+        : Layer(std::move(layer_name), false), rate(dropout_rate) {}
+    
+    Matrix forward(const Matrix& input) override;
+    Matrix backward(const Matrix& grad_output) override;
+    void update_parameters(const struct Optimizer& opt) override {}
+    std::size_t get_parameter_count() const override { return 0; }
+};
+
+// ---------------- Batch Normalization Layer ----------------
+struct BatchNorm : public Layer {
+    std::size_t features;
+    double momentum;
+    double epsilon;
+    
+    Matrix gamma;    // Scale parameter
+    Matrix beta;     // Shift parameter
+    Matrix running_mean;
+    Matrix running_var;
+    
+    // For backward pass
+    Matrix x_norm_cache;
+    Matrix x_centered_cache;
+    Matrix inv_std_cache;
+    
+    BatchNorm(std::size_t feat, 
+              double mom = 0.1, 
+              double eps = 1e-5,
+              std::string layer_name = "batchnorm")
+        : Layer(std::move(layer_name), true),
+          features(feat), momentum(mom), epsilon(eps),
+          gamma({1, feat}), beta({1, feat}),
+          running_mean({1, feat}), running_var({1, feat}) {
+        
+        gamma.fill(1.0);
+        beta.fill(0.0);
+        running_mean.fill(0.0);
+        running_var.fill(1.0);
+    }
+    
+    Matrix forward(const Matrix& input) override;
+    Matrix backward(const Matrix& grad_output) override;
+    void update_parameters(const struct Optimizer& opt) override;
+    std::size_t get_parameter_count() const override {
+        return gamma.size + beta.size;
+    }
+};
+
+// ---------------- Optimizer Base Class ----------------
+struct Optimizer {
+    OptimizerType type;
+    double learning_rate;
+    double epsilon;
+    
+    explicit Optimizer(OptimizerType opt_type, double lr = 0.001, double eps = 1e-8)
+        : type(opt_type), learning_rate(lr), epsilon(eps) {}
+    
+    virtual ~Optimizer() = default;
+    virtual void step() = 0;
+    virtual void zero_grad() = 0;
+};
+
+// ---------------- SGD Optimizer ----------------
+struct SGD : public Optimizer {
+    double momentum;
+    double weight_decay;
+    double dampening;
+    bool nesterov;
+    
+    explicit SGD(double lr = 0.01, 
+                 double mom = 0.0, 
+                 double wd = 0.0, 
+                 double damp = 0.0, 
+                 bool nest = false)
+        : Optimizer(OptimizerType::SGD, lr), 
+          momentum(mom), weight_decay(wd), dampening(damp), nesterov(nest) {}
+    
+    void step() override;
+    void zero_grad() override;
+};
+
+// ---------------- Adam Optimizer ----------------
+struct Adam : public Optimizer {
+    double beta1;
+    double beta2;
+    double weight_decay;
+    std::size_t step_count;
+    
+    explicit Adam(double lr = 0.001, 
+                  double b1 = 0.9, 
+                  double b2 = 0.999, 
+                  double wd = 0.0)
+        : Optimizer(OptimizerType::Adam, lr), 
+          beta1(b1), beta2(b2), weight_decay(wd), step_count(0) {}
+    
+    void step() override;
+    void zero_grad() override;
+};
+
+// ---------------- Neural Network Model ----------------
+class Model {
+private:
+    std::vector<std::unique_ptr<Layer>> layers;
+    std::unique_ptr<Optimizer> optimizer;
+    Config config;
+    
+public:
+    explicit Model(const Config& cfg = Config{});
+    
+    void add(std::unique_ptr<Layer> layer);
+    
+    Matrix forward(const Matrix& input);
+    double compute_loss(const Matrix& predictions, const Matrix& targets, LossFunction loss_fn);
+    void backward(const Matrix& loss_gradient);
+    void train_step(const Matrix& inputs, const Matrix& targets, LossFunction loss_fn);
+    
+    void compile(std::unique_ptr<Optimizer> opt);
+    void fit(const Matrix& X, const Matrix& y, 
+             int epochs, LossFunction loss_fn,
+             std::mt19937& rng,
+             double validation_split = 0.0,
+             bool verbose = true);
+    
+    Matrix predict(const Matrix& input);
+    double evaluate(const Matrix& X, const Matrix& y, LossFunction loss_fn);
+    
+    void save(const std::string& filepath) const;
+    void load(const std::string& filepath);
+    
+    std::size_t get_parameter_count() const;
+    
+    void print_summary() const;
+};
+
+// ---------------- Tensor Operations ----------------
+Matrix transpose(const Matrix& A);
+Matrix matmul(const Matrix& A, const Matrix& B);
+Matrix add(const Matrix& A, const Matrix& B);
+Matrix sub(const Matrix& A, const Matrix& B);
+Matrix hadamard(const Matrix& A, const Matrix& B);
+Matrix scalar_mul(const Matrix& A, double s);
+Matrix sum_rows(const Matrix& A);
+void add_rowwise_inplace(Matrix& A, const Matrix& rowvec);
+
+// ---------------- Activation Functions Implementation ----------------
+Matrix apply_activation(const Matrix& z, Activation act);
+Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
+
+// ---------------- Loss Functions Implementation ----------------
+LossResult compute_loss(const Matrix& y_true, const Matrix& y_pred, LossFunction loss_fn);
+
+// ---------------- Utility Functions ----------------
+Matrix one_hot(const std::vector<int>& labels, int num_classes);
+double accuracy(const Matrix& predictions, const std::vector<int>& labels);
+Matrix normalize(const Matrix& input, double mean = 0.0, double stddev = 1.0);
+std::pair<Matrix, Matrix> train_test_split(const Matrix& X, const Matrix& y, double test_size = 0.2, std::mt19937& rng);
+
+} // namespace dnn
