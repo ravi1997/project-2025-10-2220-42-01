@@ -87,6 +87,7 @@ struct Tensor {
         data.resize(size, init_val);
     }
     
+    
     template<typename... Args>
     requires (sizeof...(Args) == NumDims)
     double& operator()(Args... indices) {
@@ -289,10 +290,10 @@ struct Dense : public Layer {
           std::string layer_name = "dense")
         : Layer(std::move(layer_name), true), 
           in_features(in), out_features(out), activation(act),
-          weights({in, out}), bias({1, out}),
-          weight_velocity({in, out}), bias_velocity({1, out}),
-          weight_momentum({in, out}), bias_momentum({1, out}),
-          weight_rms({in, out}), bias_rms({1, out}) {
+          weights(std::array<std::size_t, 2>{in, out}), bias(std::array<std::size_t, 2>{1, out}),
+          weight_velocity(std::array<std::size_t, 2>{in, out}), bias_velocity(std::array<std::size_t, 2>{1, out}),
+          weight_momentum(std::array<std::size_t, 2>{in, out}), bias_momentum(std::array<std::size_t, 2>{1, out}),
+          weight_rms(std::array<std::size_t, 2>{in, out}), bias_rms(std::array<std::size_t, 2>{1, out}) {
         
         // Xavier/Glorot initialization for better convergence
         double limit = std::sqrt(6.0 / static_cast<double>(in + out));
@@ -364,6 +365,15 @@ struct Conv2D : public Layer {
     
     // Caches
     std::vector<Matrix> input_patches;  // For backward pass
+    Matrix input_cache;  // Store input for backward pass
+    
+    // Optimizer state
+    Matrix weight_velocity;
+    Matrix bias_velocity;
+    Matrix weight_momentum;
+    Matrix bias_momentum;
+    Matrix weight_rms;
+    Matrix bias_rms;
     
     Conv2D(std::size_t in_ch, std::size_t out_ch,
            std::size_t kh, std::size_t kw,
@@ -376,8 +386,8 @@ struct Conv2D : public Layer {
           kernel_height(kh), kernel_width(kw),
           stride_h(s_h), stride_w(s_w),
           padding_h(p_h), padding_w(p_w), activation(act),
-          weights({out_ch, in_ch * kh * kw}),  // Flattened for efficient computation
-          bias({1, out_ch}) {
+          weights(std::array<std::size_t, 2>{out_ch, in_ch * kh * kw}),  // Flattened for efficient computation
+          bias(std::array<std::size_t, 2>{1, out_ch}) {
         
         // Initialize weights with He initialization for ReLU networks
         double stddev = std::sqrt(2.0 / static_cast<double>(in_ch * kh * kw));
@@ -451,14 +461,22 @@ struct BatchNorm : public Layer {
     Matrix x_centered_cache;
     Matrix inv_std_cache;
     
+    // Optimizer state
+    Matrix weight_velocity;  // gamma gradient
+    Matrix bias_velocity;    // beta gradient
+    Matrix weight_momentum;  // gamma momentum
+    Matrix bias_momentum;    // beta momentum
+    Matrix weight_rms;       // gamma rms
+    Matrix bias_rms;         // beta rms
+    
     BatchNorm(std::size_t feat, 
               double mom = 0.1, 
               double eps = 1e-5,
               std::string layer_name = "batchnorm")
         : Layer(std::move(layer_name), true),
           features(feat), momentum(mom), epsilon(eps),
-          gamma({1, feat}), beta({1, feat}),
-          running_mean({1, feat}), running_var({1, feat}) {
+          gamma(std::array<std::size_t, 2>{1, feat}), beta(std::array<std::size_t, 2>{1, feat}),
+          running_mean(std::array<std::size_t, 2>{1, feat}), running_var(std::array<std::size_t, 2>{1, feat}) {
         
         gamma.fill(1.0);
         beta.fill(0.0);
@@ -570,6 +588,10 @@ Matrix scalar_mul(const Matrix& A, double s);
 Matrix sum_rows(const Matrix& A);
 void add_rowwise_inplace(Matrix& A, const Matrix& rowvec);
 
+// Function declarations for operations used in Dense layer
+Matrix apply_activation(const Matrix& z, Activation act);
+Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
+
 // ---------------- Activation Functions Implementation ----------------
 Matrix apply_activation(const Matrix& z, Activation act);
 Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
@@ -581,6 +603,6 @@ LossResult compute_loss(const Matrix& y_true, const Matrix& y_pred, LossFunction
 Matrix one_hot(const std::vector<int>& labels, int num_classes);
 double accuracy(const Matrix& predictions, const std::vector<int>& labels);
 Matrix normalize(const Matrix& input, double mean = 0.0, double stddev = 1.0);
-std::pair<Matrix, Matrix> train_test_split(const Matrix& X, const Matrix& y, double test_size = 0.2, std::mt19937& rng);
+std::pair<Matrix, Matrix> train_test_split(const Matrix& X, const Matrix& y, double test_size, std::mt19937& rng);
 
 } // namespace dnn
