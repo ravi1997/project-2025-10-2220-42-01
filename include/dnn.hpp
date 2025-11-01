@@ -27,6 +27,7 @@
 #include <ranges>
 #include <shared_mutex>
 #include <span>
+#include <stdexcept>  // For std::out_of_range
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -90,28 +91,62 @@ struct Tensor {
     // Constructor for 2D tensors with explicit dimensions
     template<size_t N = NumDims>
     requires (N == 2)
-    Tensor(std::size_t rows, std::size_t cols) : Tensor(std::array<std::size_t, 2>{rows, cols}) {}
+    Tensor(std::size_t rows, std::size_t cols) : shape({rows, cols}), size(rows * cols) {
+        data.resize(size, 0.0);
+    }
     
     // Constructor for 2D tensors with explicit dimensions and initial value
     template<size_t N = NumDims>
     requires (N == 2)
-    Tensor(std::size_t rows, std::size_t cols, double init_val) : Tensor(std::array<std::size_t, 2>{rows, cols}, init_val) {}
+    Tensor(std::size_t rows, std::size_t cols, double init_val) : shape({rows, cols}), size(rows * cols) {
+        data.resize(size, init_val);
+    }
+    
+    // Constructor for 2D tensors using initializer list to fix ambiguity
+    template<size_t N = NumDims>
+    requires (N == 2)
+    Tensor(std::initializer_list<std::size_t> init_list) {
+        if (init_list.size() != 2) {
+            throw std::invalid_argument("Initializer list for 2D tensor must have exactly 2 elements");
+        }
+        auto it = init_list.begin();
+        shape[0] = *it++;
+        shape[1] = *it;
+        size = shape[0] * shape[1];
+        data.resize(size, 0.0);
+    }
+    
+    // Constructor for 2D tensors using initializer list with initial value to fix ambiguity
+    template<size_t N = NumDims>
+    requires (N == 2)
+    Tensor(std::initializer_list<std::size_t> init_list, double init_val) {
+        if (init_list.size() != 2) {
+            throw std::invalid_argument("Initializer list for 2D tensor must have exactly 2 elements");
+        }
+        auto it = init_list.begin();
+        shape[0] = *it++;
+        shape[1] = *it;
+        size = shape[0] * shape[1];
+        data.resize(size, init_val);
+    }
     
     
     template<typename... Args>
     requires (sizeof...(Args) == NumDims)
     double& operator()(Args... indices) {
         static_assert(sizeof...(Args) == NumDims, "Number of indices must match tensor dimensions");
-        std::array<std::size_t, NumDims> idx = {static_cast<std::size_t>(indices)...};
+        std::array<std::size_t, NumDims> idx = {static_cast<std::size_t>(static_cast<long unsigned int>(indices))...};
         std::size_t linear_idx = 0;
         std::size_t multiplier = 1;
         
-        for (int i = static_cast<int>(NumDims) - 1; i >= 0; --i) {
-            if (idx[i] >= shape[i]) {
+        // Process dimensions from last to first (row-major order), avoiding signed/unsigned comparison
+        for (std::size_t i = 0; i < NumDims; ++i) {
+            std::size_t dim = NumDims - 1 - i;
+            if (idx[dim] >= shape[dim]) {
                 throw std::out_of_range("Tensor access out of bounds");
             }
-            linear_idx += idx[i] * multiplier;
-            multiplier *= shape[i];
+            linear_idx += idx[dim] * multiplier;
+            multiplier *= shape[dim];
         }
         
         return data[linear_idx];
@@ -121,16 +156,18 @@ struct Tensor {
     requires (sizeof...(Args) == NumDims)
     double operator()(Args... indices) const {
         static_assert(sizeof...(Args) == NumDims, "Number of indices must match tensor dimensions");
-        std::array<std::size_t, NumDims> idx = {static_cast<std::size_t>(indices)...};
+        std::array<std::size_t, NumDims> idx = {static_cast<std::size_t>(static_cast<long unsigned int>(indices))...};
         std::size_t linear_idx = 0;
         std::size_t multiplier = 1;
         
-        for (int i = static_cast<int>(NumDims) - 1; i >= 0; --i) {
-            if (idx[i] >= shape[i]) {
+        // Process dimensions from last to first (row-major order), avoiding signed/unsigned comparison
+        for (std::size_t i = 0; i < NumDims; ++i) {
+            std::size_t dim = NumDims - 1 - i;
+            if (idx[dim] >= shape[dim]) {
                 throw std::out_of_range("Tensor access out of bounds");
             }
-            linear_idx += idx[i] * multiplier;
-            multiplier *= shape[i];
+            linear_idx += idx[dim] * multiplier;
+            multiplier *= shape[dim];
         }
         
         return data[linear_idx];
@@ -261,12 +298,31 @@ enum class OptimizerType {
     AdamW       // Adam with decoupled weight decay
 };
 
+// ---------------- Tensor Operations (Forward Declarations) ----------------
+Matrix matmul(const Matrix& a, const Matrix& b);
+void add_rowwise_inplace(Matrix& a, const Matrix& b);
+Matrix transpose(const Matrix& m);
+Matrix sum_rows(const Matrix& m);
+Matrix add(const Matrix& A, const Matrix& B);
+Matrix sub(const Matrix& A, const Matrix& B);
+Matrix hadamard(const Matrix& A, const Matrix& B);
+Matrix scalar_mul(const Matrix& A, double s);
+
+Matrix add(const Matrix& A, const Matrix& B);
+Matrix sub(const Matrix& A, const Matrix& B);
+Matrix hadamard(const Matrix& A, const Matrix& B);
+Matrix scalar_mul(const Matrix& A, double s);
+
+// Function declarations for operations used in Dense layer
+Matrix apply_activation(const Matrix& z, Activation act);
+Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
+
 // ---------------- Layer Base Class ----------------
 struct Layer {
     std::string name;
     bool trainable;
     
-    explicit Layer(std::string layer_name = "layer", bool is_trainable = true) 
+    explicit Layer(std::string layer_name = "layer", bool is_trainable = true)
         : name(std::move(layer_name)), trainable(is_trainable) {}
     
     virtual ~Layer() = default;
@@ -297,26 +353,37 @@ struct Dense : public Layer {
     Matrix weight_rms;
     Matrix bias_rms;
     
-    Dense(std::size_t in, std::size_t out, 
-          Activation act = Activation::ReLU, 
-          std::string layer_name = "dense")
-        : Layer(std::move(layer_name), true), 
-          in_features(in), out_features(out), activation(act),
-          weights(std::array<std::size_t, 2>{in, out}), bias(std::array<std::size_t, 2>{1, out}),
+    explicit Dense(std::size_t in, std::size_t out,
+          Activation act = Activation::ReLU,
+          std::string layer_name = "dense",
+          std::mt19937* rng = nullptr)
+        : Layer(std::move(layer_name), true),
+          in_features(in), out_features(out), weights(std::array<std::size_t, 2>{in, out}),
+          bias(std::array<std::size_t, 2>{1, out}), activation(act),
+          input_cache(), pre_activation_cache(), post_activation_cache(),
           weight_velocity(std::array<std::size_t, 2>{in, out}), bias_velocity(std::array<std::size_t, 2>{1, out}),
           weight_momentum(std::array<std::size_t, 2>{in, out}), bias_momentum(std::array<std::size_t, 2>{1, out}),
           weight_rms(std::array<std::size_t, 2>{in, out}), bias_rms(std::array<std::size_t, 2>{1, out}) {
         
+        initialize_weights(rng);
+    }
+    
+    void initialize_weights(std::mt19937* rng = nullptr) {
         // Xavier/Glorot initialization for better convergence
-        double limit = std::sqrt(6.0 / static_cast<double>(in + out));
-        std::random_device rd;
-        std::mt19937 gen(rd());
+        double limit = std::sqrt(6.0 / static_cast<double>(in_features + out_features));
+        std::mt19937 gen;
+        if (rng) {
+            gen = *rng; // Use provided random number generator
+        } else {
+            std::random_device rd;
+            gen = std::mt19937(rd());
+        }
         std::uniform_real_distribution<double> dist(-limit, limit);
         
         for (auto& w : weights.data) {
             w = dist(gen);
         }
-        bias.fill(0.0);
+        std::fill(bias.data.begin(), bias.data.end(), 0.0);
     }
     
     Matrix forward(const Matrix& input) override {
@@ -354,14 +421,12 @@ struct Dense : public Layer {
     }
     
     void update_parameters(const struct Optimizer& opt) override;
+    Matrix apply_activation(const Matrix& z, Activation act);
+    Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
     
     std::size_t get_parameter_count() const override {
         return weights.size + bias.size;
     }
-    
-private:
-    Matrix apply_activation(const Matrix& z, Activation act);
-    Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
 };
 
 // ---------------- Convolutional Layer ----------------
@@ -392,25 +457,39 @@ struct Conv2D : public Layer {
            std::size_t s_h = 1, std::size_t s_w = 1,
            std::size_t p_h = 0, std::size_t p_w = 0,
            Activation act = Activation::ReLU,
-           std::string layer_name = "conv2d")
+           std::string layer_name = "conv2d",
+           std::mt19937* rng = nullptr)
         : Layer(std::move(layer_name), true),
           in_channels(in_ch), out_channels(out_ch),
           kernel_height(kh), kernel_width(kw),
           stride_h(s_h), stride_w(s_w),
           padding_h(p_h), padding_w(p_w), activation(act),
           weights(std::array<std::size_t, 2>{out_ch, in_ch * kh * kw}),  // Flattened for efficient computation
-          bias(std::array<std::size_t, 2>{1, out_ch}) {
+          bias(std::array<std::size_t, 2>{1, out_ch}),
+          input_cache(),
+          weight_velocity(std::array<std::size_t, 2>{out_ch, in_ch * kh * kw}), bias_velocity(std::array<std::size_t, 2>{1, out_ch}),
+          weight_momentum(std::array<std::size_t, 2>{out_ch, in_ch * kh * kw}), bias_momentum(std::array<std::size_t, 2>{1, out_ch}),
+          weight_rms(std::array<std::size_t, 2>{out_ch, in_ch * kh * kw}), bias_rms(std::array<std::size_t, 2>{1, out_ch}) {
         
+        initialize_weights(rng);
+    }
+    
+    void initialize_weights(std::mt19937* rng = nullptr) {
         // Initialize weights with He initialization for ReLU networks
-        double stddev = std::sqrt(2.0 / static_cast<double>(in_ch * kh * kw));
-        std::random_device rd;
-        std::mt19937 gen(rd());
+        double stddev = std::sqrt(2.0 / static_cast<double>(in_channels * kernel_height * kernel_width));
+        std::mt19937 gen;
+        if (rng) {
+            gen = *rng; // Use provided random number generator
+        } else {
+            std::random_device rd;
+            gen = std::mt19937(rd());
+        }
         std::normal_distribution<double> dist(0.0, stddev);
         
         for (auto& w : weights.data) {
             w = dist(gen);
         }
-        bias.fill(0.0);
+        std::fill(bias.data.begin(), bias.data.end(), 0.0);
     }
     
     Matrix forward(const Matrix& input) override;
@@ -439,7 +518,7 @@ struct MaxPool2D : public Layer {
     
     Matrix forward(const Matrix& input) override;
     Matrix backward(const Matrix& grad_output) override;
-    void update_parameters(const struct Optimizer& opt) override {}
+    void update_parameters(const struct Optimizer& /*opt*/) override {}
     std::size_t get_parameter_count() const override { return 0; }
 };
 
@@ -453,7 +532,7 @@ struct Dropout : public Layer {
     
     Matrix forward(const Matrix& input) override;
     Matrix backward(const Matrix& grad_output) override;
-    void update_parameters(const struct Optimizer& opt) override {}
+    void update_parameters(const struct Optimizer& /*opt*/) override {}
     std::size_t get_parameter_count() const override { return 0; }
 };
 
@@ -491,10 +570,10 @@ struct BatchNorm : public Layer {
           gamma(std::array<std::size_t, 2>{1, feat}), beta(std::array<std::size_t, 2>{1, feat}),
           running_mean(std::array<std::size_t, 2>{1, feat}), running_var(std::array<std::size_t, 2>{1, feat}) {
         
-        gamma.fill(1.0);
-        beta.fill(0.0);
-        running_mean.fill(0.0);
-        running_var.fill(1.0);
+        std::fill(gamma.data.begin(), gamma.data.end(), 1.0);
+        std::fill(beta.data.begin(), beta.data.end(), 0.0);
+        std::fill(running_mean.data.begin(), running_mean.data.end(), 0.0);
+        std::fill(running_var.data.begin(), running_var.data.end(), 1.0);
     }
     
     Matrix forward(const Matrix& input) override;
@@ -591,27 +670,6 @@ public:
     void print_summary() const;
 };
 
-// ---------------- Tensor Operations ----------------
-Matrix transpose(const Matrix& A);
-Matrix matmul(const Matrix& A, const Matrix& B);
-Matrix add(const Matrix& A, const Matrix& B);
-Matrix sub(const Matrix& A, const Matrix& B);
-Matrix hadamard(const Matrix& A, const Matrix& B);
-Matrix scalar_mul(const Matrix& A, double s);
-Matrix sum_rows(const Matrix& A);
-void add_rowwise_inplace(Matrix& A, const Matrix& rowvec);
-
-// Function declarations for operations used in Dense layer
-Matrix apply_activation(const Matrix& z, Activation act);
-Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
-
-// Function declarations for operations used in Dense layer
-Matrix apply_activation(const Matrix& z, Activation act);
-Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
-
-// ---------------- Activation Functions Implementation ----------------
-Matrix apply_activation(const Matrix& z, Activation act);
-Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
 
 // ---------------- Loss Functions Implementation ----------------
 LossResult compute_loss(const Matrix& y_true, const Matrix& y_pred, LossFunction loss_fn);

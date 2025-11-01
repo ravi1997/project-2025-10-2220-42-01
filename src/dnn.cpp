@@ -21,6 +21,15 @@ namespace dnn {
 Matrix apply_activation(const Matrix& z, Activation act);
 Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
 
+// --- Dense Layer Private Methods ---
+Matrix Dense::apply_activation(const Matrix& z, Activation act) {
+    return dnn::apply_activation(z, act);
+}
+
+Matrix Dense::apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act) {
+    return dnn::apply_activation_derivative(a, grad, act);
+}
+
 // --- small utils (internal) ---
 static inline bool is_finite(double x) noexcept {
     return std::isfinite(x) != 0;
