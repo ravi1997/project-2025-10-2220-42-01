@@ -1,6 +1,7 @@
 // dnn.cpp — comprehensive implementation of DNN library
 #include "dnn.hpp"
 #include "model_serializer.hpp"
+#include "tensor_ops.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -238,231 +239,153 @@ static void apply_optimizer_update(const Optimizer& opt,
 
 
 // ---------------- Tensor Operations ----------------
+// Use the new tensor operations from tensor_ops.hpp
 Matrix transpose(const Matrix& A) {
-    Matrix T({A.shape[1], A.shape[0]});
-    for (std::size_t r = 0; r < A.shape[0]; ++r) {
-        for (std::size_t c = 0; c < A.shape[1]; ++c) {
-            T(c, r) = A(r, c);
-        }
-    }
-    return T;
+    return dnn::transpose(A);
 }
 
 Matrix matmul(const Matrix& A, const Matrix& B) {
-    if (A.shape[1] != B.shape[0]) {
-        throw std::invalid_argument("matmul: A.cols != B.rows");
-    }
-    
-    Matrix C({A.shape[0], B.shape[1]}, 0.0);
-    
-    // Use parallel execution if enabled and matrix is large enough
-    if (Config::USE_VECTORIZATION && A.shape[0] >= 100) {
-        std::vector<std::thread> threads;
-        const std::size_t num_threads = std::min(Config::MAX_THREADS,
-                                                static_cast<std::size_t>(std::thread::hardware_concurrency()));
-        const std::size_t rows_per_thread = A.shape[0] / num_threads;
-        
-        for (std::size_t t = 0; t < num_threads; ++t) {
-            threads.emplace_back([&, t]() {
-                const std::size_t start_row = t * rows_per_thread;
-                const std::size_t end_row = (t == num_threads - 1) ? A.shape[0] : (t + 1) * rows_per_thread;
-                
-                for (std::size_t i = start_row; i < end_row; ++i) {
-                    for (std::size_t k = 0; k < A.shape[1]; ++k) {
-                        const double a = A(i, k);
-                        for (std::size_t j = 0; j < B.shape[1]; ++j) {
-                            C(i, j) += a * B(k, j);
-                        }
-                    }
-                }
-            });
-        }
-        
-        for (auto& thread : threads) {
-            thread.join();
-        }
-    } else {
-        // Sequential implementation
-        for (std::size_t i = 0; i < A.shape[0]; ++i) {
-            for (std::size_t k = 0; k < A.shape[1]; ++k) {
-                const double a = A(i, k);
-                for (std::size_t j = 0; j < B.shape[1]; ++j) {
-                    C(i, j) += a * B(k, j);
-                }
-            }
-        }
-    }
-    
-    return C;
+    return dnn::matmul(A, B);
 }
 
 void add_rowwise_inplace(Matrix& A, const Matrix& rowvec) {
-    if (rowvec.shape[0] != 1 || rowvec.shape[1] != A.shape[1]) {
-        throw std::invalid_argument("add_rowwise_inplace: bad shape");
-    }
-    
-    for (std::size_t r = 0; r < A.shape[0]; ++r) {
-        for (std::size_t c = 0; c < A.shape[1]; ++c) {
-            A(r, c) += rowvec(0, c);
-        }
-    }
+    dnn::add_rowwise_inplace(A, rowvec);
 }
 
 Matrix add(const Matrix& A, const Matrix& B) {
-    if (A.shape[0] != B.shape[0] || A.shape[1] != B.shape[1]) {
-        throw std::invalid_argument("add: shape mismatch");
-    }
-    
-    Matrix C({A.shape[0], A.shape[1]});
-    for (std::size_t i = 0; i < A.size; ++i) {
-        C.data[i] = A.data[i] + B.data[i];
-    }
-    return C;
+    return dnn::add(A, B);
 }
 
 Matrix sub(const Matrix& A, const Matrix& B) {
-    if (A.shape[0] != B.shape[0] || A.shape[1] != B.shape[1]) {
-        throw std::invalid_argument("sub: shape mismatch");
-    }
-    
-    Matrix C({A.shape[0], A.shape[1]});
-    for (std::size_t i = 0; i < A.size; ++i) {
-        C.data[i] = A.data[i] - B.data[i];
-    }
-    return C;
+    return dnn::sub(A, B);
 }
 
 Matrix hadamard(const Matrix& A, const Matrix& B) {
-    if (A.shape[0] != B.shape[0] || A.shape[1] != B.shape[1]) {
-        throw std::invalid_argument("hadamard: mismatch");
-    }
-    
-    Matrix C({A.shape[0], A.shape[1]});
-    for (std::size_t i = 0; i < A.size; ++i) {
-        C.data[i] = A.data[i] * B.data[i];
-    }
-    return C;
+    return dnn::hadamard(A, B);
 }
 
 Matrix scalar_mul(const Matrix& A, double s) {
-    Matrix C({A.shape[0], A.shape[1]});
-    for (std::size_t i = 0; i < A.size; ++i) {
-        C.data[i] = A.data[i] * s;
-    }
-    return C;
+    return dnn::scalar_mul(A, static_cast<float>(s));
 }
 
 Matrix sum_rows(const Matrix& A) {
-    Matrix v({1, A.shape[1]}, 0.0);
-    for (std::size_t r = 0; r < A.shape[0]; ++r) {
-        for (std::size_t c = 0; c < A.shape[1]; ++c) {
-            v(0, c) += A(r, c);
-        }
-    }
-    return v;
+    return dnn::sum_rows(A);
 }
 
 // ---------------- Activation Functions Implementation ----------------
 Matrix apply_activation(const Matrix& z, Activation act) {
-    Matrix a(z.shape[0], z.shape[1]);
-    
     switch (act) {
         case Activation::Linear:
-            a = z;
-            break;
+            return z;
             
-        case Activation::ReLU:
-            for (std::size_t i = 0; i < z.size; ++i) {
-                a.data[i] = (z.data[i] > 0.0 ? z.data[i] : 0.0);
+        case Activation::ReLU: {
+            Matrix a(z.shape(), z.layout());
+            for (std::size_t i = 0; i < z.size(); ++i) {
+                a.data()[i] = (z.data()[i] > 0.0f ? z.data()[i] : 0.0f);
             }
-            break;
+            return a;
+        }
             
         case Activation::LeakyReLU: {
-            const double alpha = 0.01;
-            for (std::size_t i = 0; i < z.size; ++i) {
-                a.data[i] = (z.data[i] > 0.0 ? z.data[i] : alpha * z.data[i]);
+            Matrix a(z.shape(), z.layout());
+            const float alpha = 0.01f;
+            for (std::size_t i = 0; i < z.size(); ++i) {
+                a.data()[i] = (z.data()[i] > 0.0f ? z.data()[i] : alpha * z.data()[i]);
             }
-            break;
+            return a;
         }
         
         case Activation::ELU: {
-            const double alpha = 1.0;
-            for (std::size_t i = 0; i < z.size; ++i) {
-                const double x = z.data[i];
-                a.data[i] = (x > 0.0 ? x : alpha * (std::exp(x) - 1.0));
+            Matrix a(z.shape(), z.layout());
+            const float alpha = 1.0f;
+            for (std::size_t i = 0; i < z.size(); ++i) {
+                const float x = z.data()[i];
+                a.data()[i] = (x > 0.0f ? x : alpha * (std::exp(x) - 1.0f));
             }
-            break;
+            return a;
         }
         
-        case Activation::Sigmoid:
-            for (std::size_t i = 0; i < z.size; ++i) {
-                a.data[i] = stable_sigmoid(z.data[i]);
+        case Activation::Sigmoid: {
+            Matrix a(z.shape(), z.layout());
+            for (std::size_t i = 0; i < z.size(); ++i) {
+                a.data()[i] = dnn::stable_sigmoid(z.data()[i]);
             }
-            break;
+            return a;
+        }
             
-        case Activation::Tanh:
-            for (std::size_t i = 0; i < z.size; ++i) {
-                a.data[i] = std::tanh(z.data[i]);
+        case Activation::Tanh: {
+            Matrix a(z.shape(), z.layout());
+            for (std::size_t i = 0; i < z.size(); ++i) {
+                a.data()[i] = std::tanh(z.data()[i]);
             }
-            break;
+            return a;
+        }
             
         case Activation::Softmax: {
-            for (std::size_t r = 0; r < z.shape[0]; ++r) {
-                double max_val = -std::numeric_limits<double>::infinity();
+            Matrix a(z.shape(), z.layout());
+            for (std::size_t r = 0; r < z.shape()[0]; ++r) {
+                float max_val = -std::numeric_limits<float>::infinity();
                 
                 // Find max value in the row
-                for (std::size_t c = 0; c < z.shape[1]; ++c) {
+                for (std::size_t c = 0; c < z.shape()[1]; ++c) {
                     max_val = std::max(max_val, z(r, c));
                 }
                 
-                double sum = 0.0;
+                float sum = 0.0f;
                 // Compute exp and sum
-                for (std::size_t c = 0; c < z.shape[1]; ++c) {
-                    const double e = std::exp(z(r, c) - max_val);
+                for (std::size_t c = 0; c < z.shape()[1]; ++c) {
+                    const float e = std::exp(z(r, c) - max_val);
                     a(r, c) = e;
                     sum += e;
                 }
                 
                 // Normalize
-                const double denom = (sum > 0.0 ? sum : 1.0);
-                for (std::size_t c = 0; c < z.shape[1]; ++c) {
+                const float denom = (sum > 0.0f ? sum : 1.0f);
+                for (std::size_t c = 0; c < z.shape()[1]; ++c) {
                     a(r, c) /= denom;
                 }
             }
-            break;
+            return a;
         }
         
-        case Activation::Swish:
-            for (std::size_t i = 0; i < z.size; ++i) {
-                const double x = z.data[i];
-                const double sigmoid_x = stable_sigmoid(x);
-                a.data[i] = x * sigmoid_x;
+        case Activation::Swish: {
+            Matrix a(z.shape(), z.layout());
+            for (std::size_t i = 0; i < z.size(); ++i) {
+                const float x = z.data()[i];
+                const float sigmoid_x = dnn::stable_sigmoid(x);
+                a.data()[i] = x * sigmoid_x;
             }
-            break;
+            return a;
+        }
             
-        case Activation::GELU:
-            for (std::size_t i = 0; i < z.size; ++i) {
-                const double x = z.data[i];
-                a.data[i] = 0.5 * x * (1.0 + std::erf(x / std::sqrt(2.0)));
+        case Activation::GELU: {
+            Matrix a(z.shape(), z.layout());
+            for (std::size_t i = 0; i < z.size(); ++i) {
+                const float x = z.data()[i];
+                a.data()[i] = 0.5f * x * (1.0f + std::erf(x / std::sqrt(2.0f)));
             }
-            break;
+            return a;
+        }
             
-        case Activation::Softplus:
-            for (std::size_t i = 0; i < z.size; ++i) {
-                a.data[i] = stable_softplus(z.data[i]);
+        case Activation::Softplus: {
+            Matrix a(z.shape(), z.layout());
+            for (std::size_t i = 0; i < z.size(); ++i) {
+                a.data()[i] = dnn::stable_softplus(z.data()[i]);
             }
-            break;
+            return a;
+        }
     }
     
-    return a;
+    // Should never reach here
+    return z;
 }
 
-Matrix apply_activation_derivative(const Matrix& z, const Matrix& grad, Activation act) {
-    if (z.shape[0] != grad.shape[0] || z.shape[1] != grad.shape[1]) {
-        throw std::invalid_argument("apply_activation_derivative: shape mismatch");
+Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act) {
+    if (a.shape() != grad.shape()) {
+        throw DimensionMismatchException("apply_activation_derivative: shape mismatch");
     }
     
-    Matrix dZ(z.shape[0], z.shape[1]);
+    Matrix dZ(a.shape(), a.layout());
     
     switch (act) {
         case Activation::Linear:
@@ -470,82 +393,82 @@ Matrix apply_activation_derivative(const Matrix& z, const Matrix& grad, Activati
             break;
             
         case Activation::ReLU:
-            for (std::size_t i = 0; i < z.size; ++i) {
-                dZ.data[i] = (z.data[i] > 0.0) ? grad.data[i] : 0.0;
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                dZ.data()[i] = (a.data()[i] > 0.0f) ? grad.data()[i] : 0.0f;
             }
             break;
             
         case Activation::LeakyReLU: {
-            const double alpha = 0.01;
-            for (std::size_t i = 0; i < z.size; ++i) {
-                dZ.data[i] = (z.data[i] > 0.0) ? grad.data[i] : alpha * grad.data[i];
+            const float alpha = 0.01f;
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                dZ.data()[i] = (a.data()[i] > 0.0f) ? grad.data()[i] : alpha * grad.data()[i];
             }
             break;
         }
         
         case Activation::ELU: {
-            const double alpha = 1.0;
-            for (std::size_t i = 0; i < z.size; ++i) {
-                const double x = z.data[i];
-                if (x > 0.0) {
-                    dZ.data[i] = grad.data[i];
+            const float alpha = 1.0f;
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                const float x = a.data()[i];
+                if (x > 0.0f) {
+                    dZ.data()[i] = grad.data()[i];
                 } else {
-                    dZ.data[i] = grad.data[i] * alpha * std::exp(x);
+                    dZ.data()[i] = grad.data()[i] * alpha * std::exp(x);
                 }
             }
             break;
         }
         
         case Activation::Sigmoid:
-            for (std::size_t i = 0; i < z.size; ++i) {
-                const double s = stable_sigmoid(z.data[i]);
-                dZ.data[i] = grad.data[i] * s * (1.0 - s);
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                const float s = dnn::stable_sigmoid(a.data()[i]);
+                dZ.data()[i] = grad.data()[i] * s * (1.0f - s);
             }
             break;
             
         case Activation::Tanh:
-            for (std::size_t i = 0; i < z.size; ++i) {
-                const double t = std::tanh(z.data[i]);
-                dZ.data[i] = grad.data[i] * (1.0 - t * t);
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                const float t = std::tanh(a.data()[i]);
+                dZ.data()[i] = grad.data()[i] * (1.0f - t * t);
             }
             break;
             
         case Activation::Softmax: {
             // For softmax, we need to compute the full Jacobian for each row
-            for (std::size_t r = 0; r < z.shape[0]; ++r) {
-                Matrix row_z(1, z.shape[1]);
-                Matrix row_softmax(1, z.shape[1]);
+            for (std::size_t r = 0; r < a.shape()[0]; ++r) {
+                Matrix row_a(1, a.shape()[1]);
+                Matrix row_softmax(1, a.shape()[1]);
                 
                 // Extract the row
-                for (std::size_t c = 0; c < z.shape[1]; ++c) {
-                    row_z(0, c) = z(r, c);
+                for (std::size_t c = 0; c < a.shape()[1]; ++c) {
+                    row_a(0, c) = a(r, c);
                 }
                 
                 // Compute softmax for the row
-                double max_val = -std::numeric_limits<double>::infinity();
-                for (std::size_t c = 0; c < z.shape[1]; ++c) {
-                    max_val = std::max(max_val, row_z(0, c));
+                float max_val = -std::numeric_limits<float>::infinity();
+                for (std::size_t c = 0; c < a.shape()[1]; ++c) {
+                    max_val = std::max(max_val, row_a(0, c));
                 }
                 
-                double sum = 0.0;
-                for (std::size_t c = 0; c < z.shape[1]; ++c) {
-                    const double e = std::exp(row_z(0, c) - max_val);
+                float sum = 0.0f;
+                for (std::size_t c = 0; c < a.shape()[1]; ++c) {
+                    const float e = std::exp(row_a(0, c) - max_val);
                     row_softmax(0, c) = e;
                     sum += e;
                 }
                 
-                const double denom = (sum > 0.0 ? sum : 1.0);
-                for (std::size_t c = 0; c < z.shape[1]; ++c) {
+                const float denom = (sum > 0.0f ? sum : 1.0f);
+                for (std::size_t c = 0; c < a.shape()[1]; ++c) {
                     row_softmax(0, c) /= denom;
                 }
                 
                 // Compute gradient: grad_output * softmax * (1 - softmax) for diagonal
                 // and -grad_output * softmax_i * softmax_j for off-diagonal
-                for (std::size_t c = 0; c < z.shape[1]; ++c) {
-                    double grad_sum = 0.0;
-                    for (std::size_t k = 0; k < z.shape[1]; ++k) {
+                for (std::size_t c = 0; c < a.shape()[1]; ++c) {
+                    float grad_sum = 0.0f;
+                    for (std::size_t k = 0; k < a.shape()[1]; ++k) {
                         if (k == c) {
-                            grad_sum += grad(r, k) * row_softmax(0, c) * (1.0 - row_softmax(0, c));
+                            grad_sum += grad(r, k) * row_softmax(0, c) * (1.0f - row_softmax(0, c));
                         } else {
                             grad_sum += grad(r, k) * (-row_softmax(0, c) * row_softmax(0, k));
                         }
@@ -557,29 +480,29 @@ Matrix apply_activation_derivative(const Matrix& z, const Matrix& grad, Activati
         }
         
         case Activation::Swish: {
-            for (std::size_t i = 0; i < z.size; ++i) {
-                const double x = z.data[i];
-                const double sigmoid_x = stable_sigmoid(x);
-                const double swish_derivative = sigmoid_x + x * sigmoid_x * (1.0 - sigmoid_x);
-                dZ.data[i] = grad.data[i] * swish_derivative;
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                const float x = a.data()[i];
+                const float sigmoid_x = dnn::stable_sigmoid(x);
+                const float swish_derivative = sigmoid_x + x * sigmoid_x * (1.0f - sigmoid_x);
+                dZ.data()[i] = grad.data()[i] * swish_derivative;
             }
             break;
         }
         
         case Activation::GELU: {
-            for (std::size_t i = 0; i < z.size; ++i) {
-                const double x = z.data[i];
-                const double phi_x = 0.5 * (1.0 + std::erf(x / std::sqrt(2.0)));
-                const double phi_prime_x = std::exp(-0.5 * x * x) / std::sqrt(2.0 * std::numbers::pi);
-                dZ.data[i] = grad.data[i] * (phi_x + x * phi_prime_x);
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                const float x = a.data()[i];
+                const float phi_x = 0.5f * (1.0f + std::erf(x / std::sqrt(2.0f)));
+                const float phi_prime_x = std::exp(-0.5f * x * x) / std::sqrt(2.0f * static_cast<float>(M_PI));
+                dZ.data()[i] = grad.data()[i] * (phi_x + x * phi_prime_x);
             }
             break;
         }
         
         case Activation::Softplus:
-            for (std::size_t i = 0; i < z.size; ++i) {
-                const double s = stable_sigmoid(z.data[i]);
-                dZ.data[i] = grad.data[i] * s;
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                const float s = dnn::stable_sigmoid(a.data()[i]);
+                dZ.data()[i] = grad.data()[i] * s;
             }
             break;
     }
@@ -589,142 +512,142 @@ Matrix apply_activation_derivative(const Matrix& z, const Matrix& grad, Activati
 
 // ---------------- Loss Functions Implementation ----------------
 LossResult compute_loss(const Matrix& y_true, const Matrix& y_pred, LossFunction loss_fn) {
-    if (y_true.shape[0] != y_pred.shape[0] || y_true.shape[1] != y_pred.shape[1]) {
-        throw std::invalid_argument("compute_loss: shape mismatch");
+    if (y_true.shape() != y_pred.shape()) {
+        throw DimensionMismatchException("compute_loss: shape mismatch");
     }
     
     LossResult result;
     
     switch (loss_fn) {
         case LossFunction::MSE: {
-            double sum = 0.0;
-            for (std::size_t i = 0; i < y_true.size; ++i) {
-                const double diff = y_pred.data[i] - y_true.data[i];
+            float sum = 0.0f;
+            for (std::size_t i = 0; i < y_true.size(); ++i) {
+                const float diff = y_pred.data()[i] - y_true.data()[i];
                 sum += diff * diff;
             }
-            result.value = sum / static_cast<double>(y_true.shape[0]);
+            result.value = sum / static_cast<float>(y_true.shape()[0]);
             
             // Gradient for MSE: 2*(y_pred - y_true)/n
-            result.gradient = scalar_mul(sub(y_pred, y_true), 2.0 / static_cast<double>(y_true.shape[0]));
+            result.gradient = scalar_mul(sub(y_pred, y_true), 2.0f / static_cast<float>(y_true.shape()[0]));
             break;
         }
         
         case LossFunction::CrossEntropy: {
             Matrix softmax_pred = apply_activation(y_pred, Activation::Softmax);
-            clamp_matrix_probabilities(softmax_pred);
-            double sum = 0.0;
+            clamp_probabilities(softmax_pred);
+            float sum = 0.0f;
             
-            for (std::size_t r = 0; r < y_true.shape[0]; ++r) {
-                for (std::size_t c = 0; c < y_true.shape[1]; ++c) {
-                    if (y_true(r, c) > 0.0) {
+            for (std::size_t r = 0; r < y_true.shape()[0]; ++r) {
+                for (std::size_t c = 0; c < y_true.shape()[1]; ++c) {
+                    if (y_true(r, c) > 0.0f) {
                         sum += -y_true(r, c) * safe_log(softmax_pred(r, c));
                     }
                 }
             }
             
-            result.value = sum / static_cast<double>(y_true.shape[0]);
+            result.value = sum / static_cast<float>(y_true.shape()[0]);
             
             // Gradient for cross-entropy with softmax: (softmax_pred - y_true) / n
-            result.gradient = scalar_mul(sub(softmax_pred, y_true), 1.0 / static_cast<double>(y_true.shape[0]));
+            result.gradient = scalar_mul(sub(softmax_pred, y_true), 1.0f / static_cast<float>(y_true.shape()[0]));
             break;
         }
         
         case LossFunction::BinaryCrossEntropy: {
             Matrix clipped_pred = y_pred;
-            clamp_matrix_probabilities(clipped_pred);
+            clamp_probabilities(clipped_pred);
             
-            double sum = 0.0;
-            for (std::size_t i = 0; i < y_true.size; ++i) {
-                sum += -(y_true.data[i] * safe_log(clipped_pred.data[i]) +
-                         (1.0 - y_true.data[i]) * safe_log(1.0 - clipped_pred.data[i]));
+            float sum = 0.0f;
+            for (std::size_t i = 0; i < y_true.size(); ++i) {
+                sum += -(y_true.data()[i] * safe_log(clipped_pred.data()[i]) +
+                         (1.0f - y_true.data()[i]) * safe_log(1.0f - clipped_pred.data()[i]));
             }
             
-            result.value = sum / static_cast<double>(y_true.shape[0]);
+            result.value = sum / static_cast<float>(y_true.shape()[0]);
             
             // Gradient for binary cross-entropy: (y_pred - y_true) / n
-            result.gradient = scalar_mul(sub(clipped_pred, y_true), 1.0 / static_cast<double>(y_true.shape[0]));
+            result.gradient = scalar_mul(sub(clipped_pred, y_true), 1.0f / static_cast<float>(y_true.shape()[0]));
             break;
         }
         
         case LossFunction::Hinge: {
-           double sum = 0.0;
-           for (std::size_t r = 0; r < y_true.shape[0]; ++r) {
-               for (std::size_t c = 0; c < y_true.shape[1]; ++c) {
-                   if (y_true(r, c) > 0.0) {  // This is the true class
-                       for (std::size_t k = 0; k < y_true.shape[1]; ++k) {
+           float sum = 0.0f;
+           for (std::size_t r = 0; r < y_true.shape()[0]; ++r) {
+               for (std::size_t c = 0; c < y_true.shape()[1]; ++c) {
+                   if (y_true(r, c) > 0.0f) {  // This is the true class
+                       for (std::size_t k = 0; k < y_true.shape()[1]; ++k) {
                            if (k != c) {  // For all other classes
-                               const double margin = 1.0 - (y_pred(r, c) - y_pred(r, k));
-                               sum += std::max(0.0, margin);
+                               const float margin = 1.0f - (y_pred(r, c) - y_pred(r, k));
+                               sum += std::max(0.0f, margin);
                            }
                        }
                    }
                }
            }
            
-           result.value = sum / static_cast<double>(y_true.shape[0]);
+           result.value = sum / static_cast<float>(y_true.shape()[0]);
            // Gradient for hinge loss: 1 if margin > 0, 0 otherwise
-           Matrix grad(y_true.shape[0], y_true.shape[1], 0.0);
-           for (std::size_t r = 0; r < y_true.shape[0]; ++r) {
-               for (std::size_t c = 0; c < y_true.shape[1]; ++c) {
-                   if (y_true(r, c) > 0.0) { // This is the true class
-                       for (std::size_t k = 0; k < y_true.shape[1]; ++k) {
+           Matrix grad(y_true.shape(), 0.0f);
+           for (std::size_t r = 0; r < y_true.shape()[0]; ++r) {
+               for (std::size_t c = 0; c < y_true.shape()[1]; ++c) {
+                   if (y_true(r, c) > 0.0f) { // This is the true class
+                       for (std::size_t k = 0; k < y_true.shape()[1]; ++k) {
                            if (k != c) {  // For all other classes
-                               const double margin = 1.0 - (y_pred(r, c) - y_pred(r, k));
-                               if (margin > 0.0) {
-                                   grad(r, c) -= 1.0;  // Gradient for true class
-                                   grad(r, k) += 1.0;  // Gradient for false class
+                               const float margin = 1.0f - (y_pred(r, c) - y_pred(r, k));
+                               if (margin > 0.0f) {
+                                   grad(r, c) -= 1.0f;  // Gradient for true class
+                                   grad(r, k) += 1.0f;  // Gradient for false class
                                }
                            }
                        }
                    }
                }
            }
-           result.gradient = scalar_mul(grad, 1.0 / static_cast<double>(y_true.shape[0]));
+           result.gradient = scalar_mul(grad, 1.0f / static_cast<float>(y_true.shape()[0]));
            break;
        }
         
         case LossFunction::Huber: {
-            const double delta = 1.0;
-            double sum = 0.0;
-            Matrix grad(y_true.shape[0], y_true.shape[1], 0.0);
+            const float delta = 1.0f;
+            float sum = 0.0f;
+            Matrix grad(y_true.shape(), 0.0f);
             
-            for (std::size_t i = 0; i < y_true.size; ++i) {
-                const double diff = y_pred.data[i] - y_true.data[i];
-                const double abs_diff = std::abs(diff);
+            for (std::size_t i = 0; i < y_true.size(); ++i) {
+                const float diff = y_pred.data()[i] - y_true.data()[i];
+                const float abs_diff = std::abs(diff);
                 
                 if (abs_diff <= delta) {
-                    sum += 0.5 * diff * diff;
-                    grad.data[i] = diff;
+                    sum += 0.5f * diff * diff;
+                    grad.data()[i] = diff;
                 } else {
-                    sum += delta * abs_diff - 0.5 * delta * delta;
-                    grad.data[i] = (diff > 0.0) ? delta : -delta;
+                    sum += delta * abs_diff - 0.5f * delta * delta;
+                    grad.data()[i] = (diff > 0.0f) ? delta : -delta;
                 }
             }
             
-            result.value = sum / static_cast<double>(y_true.shape[0]);
-            result.gradient = scalar_mul(grad, 1.0 / static_cast<double>(y_true.shape[0]));
+            result.value = sum / static_cast<float>(y_true.shape()[0]);
+            result.gradient = scalar_mul(grad, 1.0f / static_cast<float>(y_true.shape()[0]));
             break;
         }
         
         case LossFunction::KLDivergence: {
             Matrix clipped_true = y_true;
             Matrix clipped_pred = y_pred;
-            clamp_matrix_probabilities(clipped_true);
-            clamp_matrix_probabilities(clipped_pred);
+            clamp_probabilities(clipped_true);
+            clamp_probabilities(clipped_pred);
             
-            double sum = 0.0;
-            for (std::size_t i = 0; i < y_true.size; ++i) {
-                sum += clipped_true.data[i] * safe_log(clipped_true.data[i] / clipped_pred.data[i]);
+            float sum = 0.0f;
+            for (std::size_t i = 0; i < y_true.size(); ++i) {
+                sum += clipped_true.data()[i] * safe_log(clipped_true.data()[i] / clipped_pred.data()[i]);
             }
             
-            result.value = sum / static_cast<double>(y_true.shape[0]);
+            result.value = sum / static_cast<float>(y_true.shape()[0]);
             
             // Gradient for KL divergence: (log(q) - log(p) + 1) where p is true and q is pred
-            Matrix grad(y_true.shape[0], y_true.shape[1]);
-            for (std::size_t i = 0; i < y_true.size; ++i) {
-                grad.data[i] = std::log(clipped_pred.data[i]) - std::log(clipped_true.data[i]) + 1.0;
+            Matrix grad(y_true.shape());
+            for (std::size_t i = 0; i < y_true.size(); ++i) {
+                grad.data()[i] = std::log(clipped_pred.data()[i]) - std::log(clipped_true.data()[i]) + 1.0f;
             }
-            result.gradient = scalar_mul(grad, 1.0 / static_cast<double>(y_true.shape[0]));
+            result.gradient = scalar_mul(grad, 1.0f / static_cast<float>(y_true.shape()[0]));
             break;
         }
     }
