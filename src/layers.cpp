@@ -13,10 +13,10 @@ namespace dnn {
 Dense::Dense(size_t in_features, size_t out_features, std::string layer_name)
     : Layer(std::move(layer_name), true),
       in_features(in_features), out_features(out_features),
-      weights({in_features, out_features}),
-      bias({1, out_features}),
-      grad_weights({in_features, out_features}),
-      grad_bias({1, out_features}) {
+      weights(std::vector<size_t>{in_features, out_features}),
+      bias(std::vector<size_t>{1, out_features}),
+      grad_weights(std::vector<size_t>{in_features, out_features}),
+      grad_bias(std::vector<size_t>{1, out_features}) {
     // Initialize gradients to zero
     grad_weights.fill(0.0f);
     grad_bias.fill(0.0f);
@@ -168,10 +168,10 @@ Conv2D::Conv2D(size_t in_channels, size_t out_channels,
       kernel_height(kernel_height), kernel_width(kernel_width),
       stride_h(stride_h), stride_w(stride_w),
       padding_h(padding_h), padding_w(padding_w),
-      weights({out_channels, in_channels, kernel_height, kernel_width}),
-      bias({out_channels}),
-      grad_weights({out_channels, in_channels, kernel_height, kernel_width}),
-      grad_bias({out_channels}) {
+      weights(std::vector<size_t>{out_channels, in_channels, kernel_height, kernel_width}),
+      bias(std::vector<size_t>{out_channels}),
+      grad_weights(std::vector<size_t>{out_channels, in_channels, kernel_height, kernel_width}),
+      grad_bias(std::vector<size_t>{out_channels}) {
     grad_weights.fill(0.0f);
     grad_bias.fill(0.0f);
 }
@@ -838,9 +838,9 @@ void AvgPool2D::initialize_parameters(std::mt19937& rng) {
 BatchNorm::BatchNorm(size_t features, float momentum, float epsilon, std::string layer_name)
     : Layer(std::move(layer_name), true),
       features(features), momentum(momentum), epsilon(epsilon),
-      gamma({1, features}), beta({1, features}),
-      running_mean({1, features}), running_var({1, features}),
-      grad_gamma({1, features}), grad_beta({1, features}) {
+      gamma(std::vector<size_t>{1, features}), beta(std::vector<size_t>{1, features}),
+      running_mean(std::vector<size_t>{1, features}), running_var(std::vector<size_t>{1, features}),
+      grad_gamma(std::vector<size_t>{1, features}), grad_beta(std::vector<size_t>{1, features}) {
     // Initialize gamma to 1 and beta to 0
     gamma.fill(1.0f);
     beta.fill(0.0f);
@@ -1011,8 +1011,8 @@ void BatchNorm::initialize_parameters(std::mt19937& rng) {
 LayerNorm::LayerNorm(size_t features, float epsilon, std::string layer_name)
     : Layer(std::move(layer_name), true),
       features(features), epsilon(epsilon),
-      gamma({1, features}), beta({1, features}),
-      grad_gamma({1, features}), grad_beta({1, features}) {
+      gamma(std::vector<size_t>{1, features}), beta(std::vector<size_t>{1, features}),
+      grad_gamma(std::vector<size_t>{1, features}), grad_beta(std::vector<size_t>{1, features}) {
     // Initialize gamma to 1 and beta to 0
     gamma.fill(1.0f);
     beta.fill(0.0f);

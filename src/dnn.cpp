@@ -1565,13 +1565,11 @@ double Model::evaluate(const Matrix& X, const Matrix& y, LossFunction loss_fn) {
 }
 
 void Model::save(const std::string& filepath) const {
-    // Placeholder implementation
-    std::cout << "Saving model to " << filepath << std::endl;
+    ModelSerializer::save_model(*this, filepath);
 }
 
 void Model::load(const std::string& filepath) {
-    // Placeholder implementation
-    std::cout << "Loading model from " << filepath << std::endl;
+    ModelSerializer::load_model(*this, filepath);
 }
 
 std::size_t Model::get_parameter_count() const {
@@ -1590,6 +1588,361 @@ void Model::print_summary() const {
     for (size_t i = 0; i < layers.size(); ++i) {
         std::cout << "  " << i << ": " << layers[i]->name 
                   << " (trainable: " << layers[i]->trainable << ")" << std::endl;
+    }
+}
+
+// Include the model serializer
+#include "../include/model_serializer.hpp"
+
+// ---------------- Model Save/Load Implementation ----------------
+void Model::save(const std::string& filepath) const {
+    // Open file for writing in binary mode
+    ::std::ofstream file(filepath, ::std::ios::binary);
+    if (!file.is_open()) {
+        throw ::std::runtime_error("Failed to open file for writing: " + filepath);
+    }
+    
+    try {
+        // Write magic number and version
+        const uint32_t magic = 0xDNNM; // DNN Model
+        const uint32_t version = 1;
+        file.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+        file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        
+        // Save configuration
+        file.write(reinterpret_cast<const char*>(&config.epsilon), sizeof(config.epsilon));
+        file.write(reinterpret_cast<const char*>(&config.learning_rate), sizeof(config.learning_rate));
+        file.write(reinterpret_cast<const char*>(&config.batch_size), sizeof(config.batch_size));
+        file.write(reinterpret_cast<const char*>(&config.max_epochs), sizeof(config.max_epochs));
+        file.write(reinterpret_cast<const char*>(&config.validation_split), sizeof(config.validation_split));
+        file.write(reinterpret_cast<const char*>(&config.dropout_rate), sizeof(config.dropout_rate));
+        file.write(reinterpret_cast<const char*>(&config.use_batch_norm), sizeof(config.use_batch_norm));
+        file.write(reinterpret_cast<const char*>(&config.use_layer_norm), sizeof(config.use_layer_norm));
+        
+        // Save number of layers
+        size_t num_layers = layers.size();
+        file.write(reinterpret_cast<const char*>(&num_layers), sizeof(num_layers));
+        
+        // Save each layer
+        for (const auto& layer : layers) {
+            // Save layer name length and name
+            ::std::string name = layer->name;
+            size_t name_length = name.length();
+            file.write(reinterpret_cast<const char*>(&name_length), sizeof(name_length));
+            file.write(name.c_str(), name_length);
+            
+            // Save trainable flag
+            file.write(reinterpret_cast<const char*>(&layer->trainable), sizeof(layer->trainable));
+            
+            // Save layer type and parameters based on dynamic cast
+            if (const auto* dense = dynamic_cast<const Dense*>(layer.get())) {
+                // Layer type: Dense = 0
+                uint32_t layer_type = 0;
+                file.write(reinterpret_cast<const char*>(&layer_type), sizeof(layer_type));
+                
+                // Save Dense-specific parameters
+                file.write(reinterpret_cast<const char*>(&dense->in_features), sizeof(dense->in_features));
+                file.write(reinterpret_cast<const char*>(&dense->out_features), sizeof(dense->out_features));
+                
+                // Save activation function
+                int activation = static_cast<int>(dense->activation);
+                file.write(reinterpret_cast<const char*>(&activation), sizeof(activation));
+                
+                // Save weights
+                size_t weights_size = dense->weights.size;
+                file.write(reinterpret_cast<const char*>(&weights_size), sizeof(weights_size));
+                file.write(reinterpret_cast<const char*>(dense->weights.data.data()), sizeof(double) * weights_size);
+                
+                // Save bias
+                size_t bias_size = dense->bias.size;
+                file.write(reinterpret_cast<const char*>(&bias_size), sizeof(bias_size));
+                file.write(reinterpret_cast<const char*>(dense->bias.data.data()), sizeof(double) * bias_size);
+            }
+            else if (const auto* conv2d = dynamic_cast<const Conv2D*>(layer.get())) {
+                // Layer type: Conv2D = 1
+                uint32_t layer_type = 1;
+                file.write(reinterpret_cast<const char*>(&layer_type), sizeof(layer_type));
+                
+                // Save Conv2D-specific parameters
+                file.write(reinterpret_cast<const char*>(&conv2d->in_channels), sizeof(conv2d->in_channels));
+                file.write(reinterpret_cast<const char*>(&conv2d->out_channels), sizeof(conv2d->out_channels));
+                file.write(reinterpret_cast<const char*>(&conv2d->kernel_height), sizeof(conv2d->kernel_height));
+                file.write(reinterpret_cast<const char*>(&conv2d->kernel_width), sizeof(conv2d->kernel_width));
+                file.write(reinterpret_cast<const char*>(&conv2d->stride_h), sizeof(conv2d->stride_h));
+                file.write(reinterpret_cast<const char*>(&conv2d->stride_w), sizeof(conv2d->stride_w));
+                file.write(reinterpret_cast<const char*>(&conv2d->padding_h), sizeof(conv2d->padding_h));
+                file.write(reinterpret_cast<const char*>(&conv2d->padding_w), sizeof(conv2d->padding_w));
+                
+                // Save activation function
+                int activation = static_cast<int>(conv2d->activation);
+                file.write(reinterpret_cast<const char*>(&activation), sizeof(activation));
+                
+                // Save weights
+                size_t weights_size = conv2d->weights.size;
+                file.write(reinterpret_cast<const char*>(&weights_size), sizeof(weights_size));
+                file.write(reinterpret_cast<const char*>(conv2d->weights.data.data()), sizeof(double) * weights_size);
+                
+                // Save bias
+                size_t bias_size = conv2d->bias.size;
+                file.write(reinterpret_cast<const char*>(&bias_size), sizeof(bias_size));
+                file.write(reinterpret_cast<const char*>(conv2d->bias.data.data()), sizeof(double) * bias_size);
+            }
+            else if (const auto* maxpool = dynamic_cast<const MaxPool2D*>(layer.get())) {
+                // Layer type: MaxPool2D = 2
+                uint32_t layer_type = 2;
+                file.write(reinterpret_cast<const char*>(&layer_type), sizeof(layer_type));
+                
+                // Save MaxPool2D-specific parameters
+                file.write(reinterpret_cast<const char*>(&maxpool->pool_height), sizeof(maxpool->pool_height));
+                file.write(reinterpret_cast<const char*>(&maxpool->pool_width), sizeof(maxpool->pool_width));
+                file.write(reinterpret_cast<const char*>(&maxpool->stride_h), sizeof(maxpool->stride_h));
+                file.write(reinterpret_cast<const char*>(&maxpool->stride_w), sizeof(maxpool->stride_w));
+            }
+            else if (const auto* dropout = dynamic_cast<const Dropout*>(layer.get())) {
+                // Layer type: Dropout = 3
+                uint32_t layer_type = 3;
+                file.write(reinterpret_cast<const char*>(&layer_type), sizeof(layer_type));
+                
+                // Save Dropout-specific parameters
+                file.write(reinterpret_cast<const char*>(&dropout->rate), sizeof(dropout->rate));
+            }
+            else if (const auto* batchnorm = dynamic_cast<const BatchNorm*>(layer.get())) {
+                // Layer type: BatchNorm = 4
+                uint32_t layer_type = 4;
+                file.write(reinterpret_cast<const char*>(&layer_type), sizeof(layer_type));
+                
+                // Save BatchNorm-specific parameters
+                file.write(reinterpret_cast<const char*>(&batchnorm->features), sizeof(batchnorm->features));
+                file.write(reinterpret_cast<const char*>(&batchnorm->momentum), sizeof(batchnorm->momentum));
+                file.write(reinterpret_cast<const char*>(&batchnorm->epsilon), sizeof(batchnorm->epsilon));
+                
+                // Save gamma
+                size_t gamma_size = batchnorm->gamma.size;
+                file.write(reinterpret_cast<const char*>(&gamma_size), sizeof(gamma_size));
+                file.write(reinterpret_cast<const char*>(batchnorm->gamma.data.data()), sizeof(double) * gamma_size);
+                
+                // Save beta
+                size_t beta_size = batchnorm->beta.size;
+                file.write(reinterpret_cast<const char*>(&beta_size), sizeof(beta_size));
+                file.write(reinterpret_cast<const char*>(batchnorm->beta.data.data()), sizeof(double) * beta_size);
+                
+                // Save running_mean
+                size_t running_mean_size = batchnorm->running_mean.size;
+                file.write(reinterpret_cast<const char*>(&running_mean_size), sizeof(running_mean_size));
+                file.write(reinterpret_cast<const char*>(batchnorm->running_mean.data.data()), sizeof(double) * running_mean_size);
+                
+                // Save running_var
+                size_t running_var_size = batchnorm->running_var.size;
+                file.write(reinterpret_cast<const char*>(&running_var_size), sizeof(running_var_size));
+                file.write(reinterpret_cast<const char*>(batchnorm->running_var.data.data()), sizeof(double) * running_var_size);
+            }
+        }
+        
+        file.close();
+    } catch (...) {
+        file.close();
+        throw ::std::runtime_error("Failed to save model to " + filepath);
+    }
+}
+
+void Model::load(const std::string& filepath) {
+    // Open file for reading in binary mode
+    ::std::ifstream file(filepath, ::std::ios::binary);
+    if (!file.is_open()) {
+        throw ::std::runtime_error("Failed to open file for reading: " + filepath);
+    }
+    
+    try {
+        // Read and verify magic number and version
+        uint32_t magic, version;
+        file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+        file.read(reinterpret_cast<char*>(&version), sizeof(version));
+        
+        if (magic != 0xDNNM) {
+            throw ::std::runtime_error("Invalid file format: " + filepath);
+        }
+        
+        if (version != 1) {
+            throw ::std::runtime_error("Unsupported version: " + ::std::to_string(version));
+        }
+        
+        // Load configuration
+        file.read(reinterpret_cast<char*>(&config.epsilon), sizeof(config.epsilon));
+        file.read(reinterpret_cast<char*>(&config.learning_rate), sizeof(config.learning_rate));
+        file.read(reinterpret_cast<char*>(&config.batch_size), sizeof(config.batch_size));
+        file.read(reinterpret_cast<char*>(&config.max_epochs), sizeof(config.max_epochs));
+        file.read(reinterpret_cast<char*>(&config.validation_split), sizeof(config.validation_split));
+        file.read(reinterpret_cast<char*>(&config.dropout_rate), sizeof(config.dropout_rate));
+        file.read(reinterpret_cast<char*>(&config.use_batch_norm), sizeof(config.use_batch_norm));
+        file.read(reinterpret_cast<char*>(&config.use_layer_norm), sizeof(config.use_layer_norm));
+        
+        // Clear existing layers
+        layers.clear();
+        
+        // Load number of layers
+        size_t num_layers;
+        file.read(reinterpret_cast<char*>(&num_layers), sizeof(num_layers));
+        
+        // Load each layer
+        for (size_t i = 0; i < num_layers; ++i) {
+            // Load layer name length and name
+            size_t name_length;
+            file.read(reinterpret_cast<char*>(&name_length), sizeof(name_length));
+            ::std::string name(name_length, ' ');
+            file.read(&name[0], name_length);
+            
+            // Load trainable flag
+            bool trainable;
+            file.read(reinterpret_cast<char*>(&trainable), sizeof(trainable));
+            
+            // Load layer type and parameters
+            uint32_t layer_type;
+            file.read(reinterpret_cast<char*>(&layer_type), sizeof(layer_type));
+            
+            switch (layer_type) {
+                case 0: { // Dense
+                    // Load Dense-specific parameters
+                    size_t in_features, out_features;
+                    file.read(reinterpret_cast<char*>(&in_features), sizeof(in_features));
+                    file.read(reinterpret_cast<char*>(&out_features), sizeof(out_features));
+                    
+                    // Load activation function
+                    int activation_int;
+                    file.read(reinterpret_cast<char*>(&activation_int), sizeof(activation_int));
+                    Activation activation = static_cast<Activation>(activation_int);
+                    
+                    // Create layer
+                    auto layer = ::std::make_unique<Dense>(in_features, out_features, activation, name);
+                    layer->trainable = trainable;
+                    
+                    // Load weights
+                    size_t weights_size;
+                    file.read(reinterpret_cast<char*>(&weights_size), sizeof(weights_size));
+                    layer->weights.data.resize(weights_size);
+                    file.read(reinterpret_cast<char*>(layer->weights.data.data()), sizeof(double) * weights_size);
+                    
+                    // Load bias
+                    size_t bias_size;
+                    file.read(reinterpret_cast<char*>(&bias_size), sizeof(bias_size));
+                    layer->bias.data.resize(bias_size);
+                    file.read(reinterpret_cast<char*>(layer->bias.data.data()), sizeof(double) * bias_size);
+                    
+                    layers.push_back(::std::move(layer));
+                    break;
+                }
+                case 1: { // Conv2D
+                    // Load Conv2D-specific parameters
+                    size_t in_channels, out_channels, kernel_height, kernel_width;
+                    size_t stride_h, stride_w, padding_h, padding_w;
+                    file.read(reinterpret_cast<char*>(&in_channels), sizeof(in_channels));
+                    file.read(reinterpret_cast<char*>(&out_channels), sizeof(out_channels));
+                    file.read(reinterpret_cast<char*>(&kernel_height), sizeof(kernel_height));
+                    file.read(reinterpret_cast<char*>(&kernel_width), sizeof(kernel_width));
+                    file.read(reinterpret_cast<char*>(&stride_h), sizeof(stride_h));
+                    file.read(reinterpret_cast<char*>(&stride_w), sizeof(stride_w));
+                    file.read(reinterpret_cast<char*>(&padding_h), sizeof(padding_h));
+                    file.read(reinterpret_cast<char*>(&padding_w), sizeof(padding_w));
+                    
+                    // Load activation function
+                    int activation_int;
+                    file.read(reinterpret_cast<char*>(&activation_int), sizeof(activation_int));
+                    Activation activation = static_cast<Activation>(activation_int);
+                    
+                    // Create layer
+                    auto layer = ::std::make_unique<Conv2D>(in_channels, out_channels, kernel_height, kernel_width,
+                                                       stride_h, stride_w, padding_h, padding_w, activation, name);
+                    layer->trainable = trainable;
+                    
+                    // Load weights
+                    size_t weights_size;
+                    file.read(reinterpret_cast<char*>(&weights_size), sizeof(weights_size));
+                    layer->weights.data.resize(weights_size);
+                    file.read(reinterpret_cast<char*>(layer->weights.data.data()), sizeof(double) * weights_size);
+                    
+                    // Load bias
+                    size_t bias_size;
+                    file.read(reinterpret_cast<char*>(&bias_size), sizeof(bias_size));
+                    layer->bias.data.resize(bias_size);
+                    file.read(reinterpret_cast<char*>(layer->bias.data.data()), sizeof(double) * bias_size);
+                    
+                    layers.push_back(::std::move(layer));
+                    break;
+                }
+                case 2: { // MaxPool2D
+                    // Load MaxPool2D-specific parameters
+                    size_t pool_height, pool_width, stride_h, stride_w;
+                    file.read(reinterpret_cast<char*>(&pool_height), sizeof(pool_height));
+                    file.read(reinterpret_cast<char*>(&pool_width), sizeof(pool_width));
+                    file.read(reinterpret_cast<char*>(&stride_h), sizeof(stride_h));
+                    file.read(reinterpret_cast<char*>(&stride_w), sizeof(stride_w));
+                    
+                    // Create layer
+                    auto layer = ::std::make_unique<MaxPool2D>(pool_height, pool_width, stride_h, stride_w, name);
+                    layer->trainable = trainable;
+                    
+                    layers.push_back(::std::move(layer));
+                    break;
+                }
+                case 3: { // Dropout
+                    // Load Dropout-specific parameters
+                    double rate;
+                    file.read(reinterpret_cast<char*>(&rate), sizeof(rate));
+                    
+                    // Create layer
+                    auto layer = ::std::make_unique<Dropout>(rate, name);
+                    layer->trainable = trainable;
+                    
+                    layers.push_back(::std::move(layer));
+                    break;
+                }
+                case 4: { // BatchNorm
+                    // Load BatchNorm-specific parameters
+                    size_t features;
+                    double momentum, epsilon;
+                    file.read(reinterpret_cast<char*>(&features), sizeof(features));
+                    file.read(reinterpret_cast<char*>(&momentum), sizeof(momentum));
+                    file.read(reinterpret_cast<char*>(&epsilon), sizeof(epsilon));
+                    
+                    // Create layer
+                    auto layer = ::std::make_unique<BatchNorm>(features, momentum, epsilon, name);
+                    layer->trainable = trainable;
+                    
+                    // Load gamma
+                    size_t gamma_size;
+                    file.read(reinterpret_cast<char*>(&gamma_size), sizeof(gamma_size));
+                    layer->gamma.data.resize(gamma_size);
+                    file.read(reinterpret_cast<char*>(layer->gamma.data.data()), sizeof(double) * gamma_size);
+                    
+                    // Load beta
+                    size_t beta_size;
+                    file.read(reinterpret_cast<char*>(&beta_size), sizeof(beta_size));
+                    layer->beta.data.resize(beta_size);
+                    file.read(reinterpret_cast<char*>(layer->beta.data.data()), sizeof(double) * beta_size);
+                    
+                    // Load running_mean
+                    size_t running_mean_size;
+                    file.read(reinterpret_cast<char*>(&running_mean_size), sizeof(running_mean_size));
+                    layer->running_mean.data.resize(running_mean_size);
+                    file.read(reinterpret_cast<char*>(layer->running_mean.data.data()), sizeof(double) * running_mean_size);
+                    
+                    // Load running_var
+                    size_t running_var_size;
+                    file.read(reinterpret_cast<char*>(&running_var_size), sizeof(running_var_size));
+                    layer->running_var.data.resize(running_var_size);
+                    file.read(reinterpret_cast<char*>(layer->running_var.data.data()), sizeof(double) * running_var_size);
+                    
+                    layers.push_back(::std::move(layer));
+                    break;
+                }
+                default:
+                    throw ::std::runtime_error("Unknown layer type in model file: " + ::std::to_string(layer_type));
+            }
+        }
+        
+        file.close();
+    } catch (...) {
+        file.close();
+        throw ::std::runtime_error("Failed to load model from " + filepath);
     }
 }
 

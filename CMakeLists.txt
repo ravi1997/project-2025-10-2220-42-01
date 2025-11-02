@@ -16,6 +16,7 @@ set(SOURCES
     src/dnn.cpp
     src/layers.cpp
     src/optimizers.cpp
+    src/model_serializer.cpp
 )
 
 # Header files
@@ -35,22 +36,8 @@ target_link_libraries(dnn ${CMAKE_THREAD_LIBS_INIT})
 add_library(dnn_static STATIC ${SOURCES} ${HEADERS})
 target_link_libraries(dnn_static ${CMAKE_THREAD_LIBS_INIT})
 
-# Example executables
-add_executable(test_tensor_system test_tensor_system.cpp)
-target_link_libraries(test_tensor_system dnn)
-
-add_executable(test_tensor_only test_tensor_only.cpp)
-target_link_libraries(test_tensor_only dnn)
-
-add_executable(test_tensor_simple test_tensor_simple.cpp)
-target_link_libraries(test_tensor_simple dnn)
-
-add_executable(test_tensor test_tensor.cpp)
-target_link_libraries(test_tensor dnn)
-
-
-# Example applications
 add_executable(xor_example examples/xor_example.cpp)
+# Example applications
 target_link_libraries(xor_example dnn)
 
 add_executable(mnist_example examples/mnist_example.cpp)
@@ -64,9 +51,10 @@ target_link_libraries(mnist_example dnn)
 add_executable(main apps/main.cpp)
 target_link_libraries(main dnn)
 
-# Optimizer test
-add_executable(test_optimizers test_optimizers.cpp)
-target_link_libraries(test_optimizers dnn)
+# Test application
+add_executable(test_model_persistence test_model_persistence.cpp)
+target_link_libraries(test_model_persistence dnn)
+
 
 # Compiler-specific flags
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

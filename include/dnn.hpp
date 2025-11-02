@@ -38,6 +38,42 @@
 #include <variant>
 #include <vector>
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <bit>
+#include <chrono>
+#include <concepts>
+#include <coroutine>
+#include <deque>
+#include <execution>
+#include <format>
+#include <functional>
+#include <future>
+#include <initializer_list>
+#include <iterator>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <numbers>
+#include <numeric>
+#include <optional>
+#include <queue>
+#include <random>
+#include <ranges>
+#include <shared_mutex>
+#include <span>
+#include <stdexcept>  // For std::out_of_range
+#include <stop_token>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <tuple>
+#include <type_traits>
+#include <unordered_map>
+#include <variant>
+#include <vector>
+
 namespace dnn {
 
 // ---------------- Configuration ----------------
