@@ -1,5 +1,6 @@
 // dnn.cpp — comprehensive implementation of DNN library
 #include "dnn.hpp"
+#include "model_serializer.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -40,6 +41,13 @@ static inline double safe_log(double x) noexcept {
     return std::log(x > eps ? x : eps);
 }
 
+static inline double stable_softplus(double x) noexcept {
+    if (x > 0) {
+        return x + std::log1p(std::exp(-x));
+    }
+    return std::log1p(std::exp(x));
+}
+
 static inline std::string now_time() {
     std::time_t t = std::time(nullptr);
     std::tm tm{};
@@ -51,6 +59,154 @@ static inline std::string now_time() {
     char buf[32]{};
     std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
     return buf;
+}
+
+static void clip_gradient(Matrix& grad, const Optimizer& opt) {
+    if (!opt.use_gradient_clipping) {
+        return;
+    }
+    if (opt.max_gradient_norm > 0.0) {
+        double norm_sq = 0.0;
+        for (double value : grad.data) {
+            norm_sq += value * value;
+        }
+        double norm = std::sqrt(norm_sq);
+        if (norm > opt.max_gradient_norm && norm > 0.0) {
+            double scale = opt.max_gradient_norm / (norm + 1e-12);
+            for (double& value : grad.data) {
+                value *= scale;
+            }
+        }
+    } else if (opt.clip_value > 0.0) {
+        const double clip = opt.clip_value;
+        for (double& value : grad.data) {
+            if (value > clip) value = clip;
+            else if (value < -clip) value = -clip;
+        }
+    }
+}
+
+static void add_regularization(Matrix& grad, const Matrix& param, const Optimizer& opt) {
+    if (opt.l1_lambda > 0.0) {
+        for (std::size_t i = 0; i < grad.size; ++i) {
+            const double w = param.data[i];
+            grad.data[i] += (w > 0.0 ? 1.0 : (w < 0.0 ? -1.0 : 0.0)) * opt.l1_lambda;
+        }
+    }
+    if (opt.l2_lambda > 0.0) {
+        for (std::size_t i = 0; i < grad.size; ++i) {
+            grad.data[i] += param.data[i] * opt.l2_lambda;
+        }
+    }
+}
+
+static void sgd_update(const SGD& sgd, const Optimizer& opt, Matrix& param,
+                       Matrix& grad, Matrix& momentum) {
+    if (sgd.weight_decay > 0.0) {
+        for (std::size_t i = 0; i < grad.size; ++i) {
+            grad.data[i] += sgd.weight_decay * param.data[i];
+        }
+    }
+    if (sgd.momentum > 0.0) {
+        for (std::size_t i = 0; i < momentum.size; ++i) {
+            double v = sgd.momentum * momentum.data[i] + (1.0 - sgd.dampening) * grad.data[i];
+            double update = sgd.nesterov ? (grad.data[i] + sgd.momentum * v) : v;
+            param.data[i] -= opt.learning_rate * update;
+            momentum.data[i] = v;
+        }
+    } else {
+        for (std::size_t i = 0; i < param.size; ++i) {
+            param.data[i] -= opt.learning_rate * grad.data[i];
+        }
+    }
+}
+
+static void rmsprop_update(const RMSprop& rms, const Optimizer& opt,
+                           Matrix& param, Matrix& grad, Matrix& rms_buffer) {
+    for (std::size_t i = 0; i < rms_buffer.size; ++i) {
+        if (rms.weight_decay > 0.0) {
+            grad.data[i] += rms.weight_decay * param.data[i];
+        }
+        rms_buffer.data[i] = rms.alpha * rms_buffer.data[i] + (1.0 - rms.alpha) * grad.data[i] * grad.data[i];
+        param.data[i] -= opt.learning_rate * grad.data[i] /
+                         (std::sqrt(rms_buffer.data[i]) + rms.epsilon);
+    }
+}
+
+static void adam_update(const Adam& adam, const Optimizer& opt,
+                        Matrix& param, Matrix& grad,
+                        Matrix& momentum, Matrix& rms_buffer) {
+    if (adam.weight_decay > 0.0) {
+        for (std::size_t i = 0; i < grad.size; ++i) {
+            grad.data[i] += adam.weight_decay * param.data[i];
+        }
+    }
+    for (std::size_t i = 0; i < momentum.size; ++i) {
+        momentum.data[i] = adam.beta1 * momentum.data[i] + (1.0 - adam.beta1) * grad.data[i];
+        rms_buffer.data[i] = adam.beta2 * rms_buffer.data[i] +
+                             (1.0 - adam.beta2) * grad.data[i] * grad.data[i];
+        double m_hat = momentum.data[i] / (1.0 - std::pow(adam.beta1, static_cast<double>(adam.step_count)) + 1e-12);
+        double v_hat = rms_buffer.data[i] / (1.0 - std::pow(adam.beta2, static_cast<double>(adam.step_count)) + 1e-12);
+        param.data[i] -= opt.learning_rate * m_hat / (std::sqrt(v_hat) + opt.epsilon);
+    }
+}
+
+static void adamw_update(const AdamW& adamw, const Optimizer& opt,
+                         Matrix& param, Matrix& grad,
+                         Matrix& momentum, Matrix& rms_buffer) {
+    for (std::size_t i = 0; i < momentum.size; ++i) {
+        momentum.data[i] = adamw.beta1 * momentum.data[i] + (1.0 - adamw.beta1) * grad.data[i];
+        rms_buffer.data[i] = adamw.beta2 * rms_buffer.data[i] +
+                             (1.0 - adamw.beta2) * grad.data[i] * grad.data[i];
+        double m_hat = momentum.data[i] / (1.0 - std::pow(adamw.beta1, static_cast<double>(adamw.step_count)) + 1e-12);
+        double v_hat = rms_buffer.data[i] / (1.0 - std::pow(adamw.beta2, static_cast<double>(adamw.step_count)) + 1e-12);
+        double update = opt.learning_rate * m_hat / (std::sqrt(v_hat) + opt.epsilon);
+        param.data[i] -= update;
+        if (adamw.weight_decay > 0.0) {
+            param.data[i] -= opt.learning_rate * adamw.weight_decay * param.data[i];
+        }
+    }
+}
+
+static void apply_optimizer_update(const Optimizer& opt,
+                                   Matrix& param, Matrix& grad,
+                                   Matrix& momentum, Matrix& rms_buffer) {
+    switch (opt.type) {
+        case OptimizerType::SGD: {
+            const auto* sgd = dynamic_cast<const SGD*>(&opt);
+            if (!sgd) {
+                throw std::runtime_error("Optimizer type mismatch for SGD");
+            }
+            sgd_update(*sgd, opt, param, grad, momentum);
+            break;
+        }
+        case OptimizerType::Adam: {
+            const auto* adam = dynamic_cast<const Adam*>(&opt);
+            if (!adam) {
+                throw std::runtime_error("Optimizer type mismatch for Adam");
+            }
+            adam_update(*adam, opt, param, grad, momentum, rms_buffer);
+            break;
+        }
+        case OptimizerType::RMSprop: {
+            const auto* rms = dynamic_cast<const RMSprop*>(&opt);
+            if (!rms) {
+                throw std::runtime_error("Optimizer type mismatch for RMSprop");
+            }
+            rmsprop_update(*rms, opt, param, grad, rms_buffer);
+            break;
+        }
+        case OptimizerType::AdamW: {
+            const auto* adamw = dynamic_cast<const AdamW*>(&opt);
+            if (!adamw) {
+                throw std::runtime_error("Optimizer type mismatch for AdamW");
+            }
+            adamw_update(*adamw, opt, param, grad, momentum, rms_buffer);
+            break;
+        }
+        default:
+            throw std::runtime_error("Unsupported optimizer type in parameter update");
+    }
 }
 
 
@@ -273,7 +429,7 @@ Matrix apply_activation(const Matrix& z, Activation act) {
             
         case Activation::Softplus:
             for (std::size_t i = 0; i < z.size; ++i) {
-                a.data[i] = std::log(1.0 + std::exp(z.data[i]));
+                a.data[i] = stable_softplus(z.data[i]);
             }
             break;
     }
@@ -568,148 +724,12 @@ LossResult compute_loss(const Matrix& y_true, const Matrix& y_pred, LossFunction
 
 // ---------------- Dense Layer Methods ----------------
 void Dense::update_parameters(const Optimizer& opt) {
-    // Apply gradient clipping if enabled
-    if (opt.use_gradient_clipping) {
-        if (opt.max_gradient_norm > 0.0) {
-            // Clip by norm
-            double norm = 0.0;
-            for (std::size_t i = 0; i < weight_velocity.size; ++i) {
-                norm += weight_velocity.data[i] * weight_velocity.data[i];
-            }
-            norm = std::sqrt(norm);
-            
-            if (norm > opt.max_gradient_norm) {
-                double clip_coeff = opt.max_gradient_norm / (norm + 1e-6);
-                for (std::size_t i = 0; i < weight_velocity.size; ++i) {
-                    weight_velocity.data[i] *= clip_coeff;
-                }
-            }
-            
-            // Clip bias gradients
-            double bias_norm = 0.0;
-            for (std::size_t i = 0; i < bias_velocity.size; ++i) {
-                bias_norm += bias_velocity.data[i] * bias_velocity.data[i];
-            }
-            bias_norm = std::sqrt(bias_norm);
-            
-            if (bias_norm > opt.max_gradient_norm) {
-                double clip_coeff = opt.max_gradient_norm / (bias_norm + 1e-6);
-                for (std::size_t i = 0; i < bias_velocity.size; ++i) {
-                    bias_velocity.data[i] *= clip_coeff;
-                }
-            }
-        } else if (opt.clip_value > 0.0) {
-            // Clip by value
-            for (std::size_t i = 0; i < weight_velocity.size; ++i) {
-                if (weight_velocity.data[i] > opt.clip_value) {
-                    weight_velocity.data[i] = opt.clip_value;
-                } else if (weight_velocity.data[i] < -opt.clip_value) {
-                    weight_velocity.data[i] = -opt.clip_value;
-                }
-            }
-            
-            // Clip bias gradients
-            for (std::size_t i = 0; i < bias_velocity.size; ++i) {
-                if (bias_velocity.data[i] > opt.clip_value) {
-                    bias_velocity.data[i] = opt.clip_value;
-                } else if (bias_velocity.data[i] < -opt.clip_value) {
-                    bias_velocity.data[i] = -opt.clip_value;
-                }
-            }
-        }
-    }
-    
-    // Apply regularization
-    if (opt.l1_lambda > 0.0) {
-        // L1 regularization (Lasso)
-        for (std::size_t i = 0; i < weights.size; ++i) {
-            double sign = (weights.data[i] > 0.0) ? 1.0 :
-                         (weights.data[i] < 0.0) ? -1.0 : 0.0;
-            weight_velocity.data[i] += sign * opt.l1_lambda;
-        }
-        
-        // L1 regularization for bias
-        for (std::size_t i = 0; i < bias.size; ++i) {
-            double sign = (bias.data[i] > 0.0) ? 1.0 :
-                         (bias.data[i] < 0.0) ? -1.0 : 0.0;
-            bias_velocity.data[i] += sign * opt.l1_lambda;
-        }
-    }
-    
-    if (opt.l2_lambda > 0.0) {
-        // L2 regularization (Ridge)
-        for (std::size_t i = 0; i < weights.size; ++i) {
-            weight_velocity.data[i] += weights.data[i] * opt.l2_lambda;
-        }
-        
-        // L2 regularization for bias
-        for (std::size_t i = 0; i < bias.size; ++i) {
-            bias_velocity.data[i] += bias.data[i] * opt.l2_lambda;
-        }
-    }
-    
-    if (const auto* sgd = dynamic_cast<const SGD*>(&opt)) {
-        // SGD update with momentum
-        if (sgd->momentum > 0.0) {
-            // Update velocity
-            weight_velocity = add(scalar_mul(weight_velocity, sgd->momentum),
-                                 scalar_mul(weight_velocity, 1.0));
-            bias_velocity = add(scalar_mul(bias_velocity, sgd->momentum),
-                               scalar_mul(bias_velocity, 1.0));
-            
-            // Add gradient to velocity
-            weight_velocity = add(scalar_mul(weight_velocity, sgd->momentum), weight_velocity);
-            bias_velocity = add(scalar_mul(bias_velocity, sgd->momentum), bias_velocity);
-            
-            // Update parameters
-            weights = sub(weights, scalar_mul(weight_velocity, sgd->learning_rate));
-            bias = sub(bias, scalar_mul(bias_velocity, sgd->learning_rate));
-        } else {
-            // Simple SGD without momentum
-            weights = sub(weights, scalar_mul(scalar_mul(weights, sgd->weight_decay), sgd->learning_rate));
-            weights = sub(weights, scalar_mul(weight_velocity, sgd->learning_rate));
-            bias = sub(bias, scalar_mul(bias_velocity, sgd->learning_rate));
-        }
-    } else if (const auto* adam = dynamic_cast<const Adam*>(&opt)) {
-        // Adam update
-        const_cast<Adam*>(adam)->step_count++;
-        
-        // Update momentum
-        weight_momentum = add(scalar_mul(weight_momentum, adam->beta1),
-                             scalar_mul(weight_velocity, 1.0 - adam->beta1));
-        bias_momentum = add(scalar_mul(bias_momentum, adam->beta1),
-                           scalar_mul(bias_velocity, 1.0 - adam->beta1));
-        
-        // Update RMS
-        Matrix weight_grad_sq = hadamard(weight_velocity, weight_velocity);
-        Matrix bias_grad_sq = hadamard(bias_velocity, bias_velocity);
-        
-        weight_rms = add(scalar_mul(weight_rms, adam->beta2),
-                        scalar_mul(weight_grad_sq, 1.0 - adam->beta2));
-        bias_rms = add(scalar_mul(bias_rms, adam->beta2),
-                      scalar_mul(bias_grad_sq, 1.0 - adam->beta2));
-        
-        // Bias correction
-        double bias_correction1 = 1.0 - std::pow(adam->beta1, static_cast<double>(adam->step_count));
-        double bias_correction2 = 1.0 - std::pow(adam->beta2, static_cast<double>(adam->step_count));
-        
-        Matrix m_hat_w = scalar_mul(weight_momentum, 1.0 / bias_correction1);
-        Matrix m_hat_b = scalar_mul(bias_momentum, 1.0 / bias_correction1);
-        Matrix v_hat_w = scalar_mul(weight_rms, 1.0 / bias_correction2);
-        Matrix v_hat_b = scalar_mul(bias_rms, 1.0 / bias_correction2);
-        
-        // Update parameters
-        Matrix weight_update = scalar_mul(m_hat_w, adam->learning_rate);
-        Matrix bias_update = scalar_mul(m_hat_b, adam->learning_rate);
-        
-        // Apply weight decay if needed
-        if (adam->weight_decay > 0.0) {
-            weights = sub(weights, scalar_mul(weights, adam->weight_decay * adam->learning_rate));
-        }
-        
-        weights = sub(weights, weight_update);
-        bias = sub(bias, bias_update);
-    }
+    clip_gradient(weight_velocity, opt);
+    clip_gradient(bias_velocity, opt);
+    add_regularization(weight_velocity, weights, opt);
+    add_regularization(bias_velocity, bias, opt);
+    apply_optimizer_update(opt, weights, weight_velocity, weight_momentum, weight_rms);
+    apply_optimizer_update(opt, bias, bias_velocity, bias_momentum, bias_rms);
 }
 
 // ---------------- Conv2D Layer Methods ----------------
@@ -729,6 +749,8 @@ Matrix Conv2D::forward(const Matrix& input) {
     // Calculate output dimensions
     std::size_t out_height = (input_height - kernel_height + 2 * padding_h) / stride_h + 1;
     std::size_t out_width = (input_width - kernel_width + 2 * padding_w) / stride_w + 1;
+    last_input_height = input_height;
+    last_input_width = input_width;
     
     // Initialize output matrix
     Matrix output(input.shape[0], out_height * out_width * out_channels);
@@ -772,51 +794,46 @@ Matrix Conv2D::forward(const Matrix& input) {
     }
     
     // Apply activation function
-    return apply_activation(output, activation);
+    pre_activation_cache = output;
+    Matrix activated = apply_activation(output, activation);
+    post_activation_cache = activated;
+    return activated;
 }
 
 Matrix Conv2D::backward(const Matrix& grad_output) {
-    // Calculate dimensions
-    std::size_t total_spatial_size = input_cache.shape[1] / in_channels;
-    std::size_t input_height = static_cast<std::size_t>(std::sqrt(total_spatial_size));
-    std::size_t input_width = total_spatial_size / input_height;
-    
+    std::size_t input_height = last_input_height;
+    std::size_t input_width = last_input_width;
+    if (input_height == 0 || input_width == 0) {
+        std::size_t total_spatial_size = input_cache.shape[1] / in_channels;
+        input_height = static_cast<std::size_t>(std::sqrt(total_spatial_size));
+        input_width = total_spatial_size / input_height;
+    }
     std::size_t out_height = (input_height - kernel_height + 2 * padding_h) / stride_h + 1;
     std::size_t out_width = (input_width - kernel_width + 2 * padding_w) / stride_w + 1;
-    
-    // Initialize gradient matrices
+
+    Matrix grad_act = apply_activation_derivative(post_activation_cache, grad_output, activation);
     Matrix grad_input(input_cache.shape[0], input_cache.shape[1], 0.0);
-    Matrix grad_weights(out_channels, in_channels * kernel_height * kernel_width, 0.0);
-    Matrix grad_bias(1, out_channels, 0.0);
-    
-    // Compute gradients
-    for (std::size_t b = 0; b < grad_output.shape[0]; ++b) {
+    Matrix grad_weights_local(out_channels, in_channels * kernel_height * kernel_width, 0.0);
+    Matrix grad_bias_local(1, out_channels, 0.0);
+
+    for (std::size_t b = 0; b < grad_act.shape[0]; ++b) {
         for (std::size_t oc = 0; oc < out_channels; ++oc) {
             for (std::size_t oh = 0; oh < out_height; ++oh) {
                 for (std::size_t ow = 0; ow < out_width; ++ow) {
                     std::size_t output_idx = oc * (out_height * out_width) + oh * out_width + ow;
-                    double grad_val = grad_output(b, output_idx);
-                    
-                    // Accumulate bias gradient
-                    grad_bias(0, oc) += grad_val;
-                    
-                    // Compute gradients with respect to weights and input
+                    double grad_val = grad_act(b, output_idx);
+                    grad_bias_local(0, oc) += grad_val;
+
                     for (std::size_t ic = 0; ic < in_channels; ++ic) {
                         for (std::size_t kh = 0; kh < kernel_height; ++kh) {
                             for (std::size_t kw = 0; kw < kernel_width; ++kw) {
                                 std::size_t ih = oh * stride_h - padding_h + kh;
                                 std::size_t iw = ow * stride_w - padding_w + kw;
-                                
                                 if (ih < input_height && iw < input_width) {
                                     std::size_t input_idx = ic * (input_height * input_width) + ih * input_width + iw;
-                                    
-                                    // Gradient with respect to weights
-                                    grad_weights(oc, ic * kernel_height * kernel_width + kh * kernel_width + kw) +=
-                                        input_cache(b, input_idx) * grad_val;
-                                    
-                                    // Gradient with respect to input
-                                    grad_input(b, input_idx) +=
-                                        weights(oc, ic * kernel_height * kernel_width + kh * kernel_width + kw) * grad_val;
+                                    std::size_t weight_col = ic * kernel_height * kernel_width + kh * kernel_width + kw;
+                                    grad_weights_local(oc, weight_col) += input_cache(b, input_idx) * grad_val;
+                                    grad_input(b, input_idx) += weights(oc, weight_col) * grad_val;
                                 }
                             }
                         }
@@ -825,76 +842,21 @@ Matrix Conv2D::backward(const Matrix& grad_output) {
             }
         }
     }
-    
-    // Store gradients for optimizer update
-    // For Conv2D, we need to add the missing velocity members or use a different approach
-    // Adding temporary variables to fix the build
-    // We'll add the missing members to the class in the header file instead
-    
+
+    grad_weights = grad_weights_local;
+    grad_bias = grad_bias_local;
+    weight_velocity = grad_weights_local;
+    bias_velocity = grad_bias_local;
     return grad_input;
 }
 
 void Conv2D::update_parameters(const Optimizer& opt) {
-    if (const auto* sgd = dynamic_cast<const SGD*>(&opt)) {
-        // SGD update with momentum
-        if (sgd->momentum > 0.0) {
-            // Update velocity
-            weight_velocity = add(scalar_mul(weight_velocity, sgd->momentum),
-                                 scalar_mul(weights, sgd->weight_decay));
-            bias_velocity = add(scalar_mul(bias_velocity, sgd->momentum),
-                               scalar_mul(bias, sgd->weight_decay));
-            
-            // Add gradient to velocity
-            weight_velocity = add(scalar_mul(weight_velocity, sgd->momentum), weight_velocity);
-            bias_velocity = add(scalar_mul(bias_velocity, sgd->momentum), bias_velocity);
-            
-            // Update parameters
-            weights = sub(weights, scalar_mul(weight_velocity, sgd->learning_rate));
-            bias = sub(bias, scalar_mul(bias_velocity, sgd->learning_rate));
-        } else {
-            // Simple SGD without momentum
-            weights = sub(weights, scalar_mul(scalar_mul(weights, sgd->weight_decay), sgd->learning_rate));
-            weights = sub(weights, scalar_mul(weight_velocity, sgd->learning_rate));
-            bias = sub(bias, scalar_mul(bias_velocity, sgd->learning_rate));
-        }
-    } else if (const auto* adam = dynamic_cast<const Adam*>(&opt)) {
-        // Adam update
-        static std::size_t step_count = 0;
-        step_count++;
-        
-        // Update momentum
-        weight_momentum = add(scalar_mul(weight_momentum, adam->beta1),
-                             scalar_mul(weight_velocity, 1.0 - adam->beta1));
-        bias_momentum = add(scalar_mul(bias_momentum, adam->beta1),
-                           scalar_mul(bias_velocity, 1.0 - adam->beta1));
-        
-        // Update RMS
-        Matrix weight_grad_sq = hadamard(weight_velocity, weight_velocity);
-        Matrix bias_grad_sq = hadamard(bias_velocity, bias_velocity);
-        
-        weight_rms = add(scalar_mul(weight_rms, adam->beta2),
-                        scalar_mul(weight_grad_sq, 1.0 - adam->beta2));
-        bias_rms = add(scalar_mul(bias_rms, adam->beta2),
-                      scalar_mul(bias_grad_sq, 1.0 - adam->beta2));
-        
-        // Bias correction
-        double bias_correction1 = 1.0 - std::pow(adam->beta1, static_cast<double>(step_count));
-        double bias_correction2 = 1.0 - std::pow(adam->beta2, static_cast<double>(step_count));
-        
-        Matrix m_hat_w = scalar_mul(weight_momentum, 1.0 / bias_correction1);
-        Matrix m_hat_b = scalar_mul(bias_momentum, 1.0 / bias_correction1);
-        Matrix v_hat_w = scalar_mul(weight_rms, 1.0 / bias_correction2);
-        Matrix v_hat_b = scalar_mul(bias_rms, 1.0 / bias_correction2);
-        
-        // Update parameters
-        weights = sub(weights, scalar_mul(m_hat_w, adam->learning_rate));
-        bias = sub(bias, scalar_mul(m_hat_b, adam->learning_rate));
-        
-        // Apply weight decay if needed
-        if (adam->weight_decay > 0.0) {
-            weights = sub(weights, scalar_mul(weights, adam->weight_decay * adam->learning_rate));
-        }
-    }
+    clip_gradient(weight_velocity, opt);
+    clip_gradient(bias_velocity, opt);
+    add_regularization(weight_velocity, weights, opt);
+    add_regularization(bias_velocity, bias, opt);
+    apply_optimizer_update(opt, weights, weight_velocity, weight_momentum, weight_rms);
+    apply_optimizer_update(opt, bias, bias_velocity, bias_momentum, bias_rms);
 }
 
 // ---------------- MaxPool2D Layer Methods ----------------
@@ -1147,66 +1109,12 @@ Matrix BatchNorm::backward(const Matrix& grad_output) {
 }
 
 void BatchNorm::update_parameters(const Optimizer& opt) {
-    if (const auto* sgd = dynamic_cast<const SGD*>(&opt)) {
-        // SGD update with momentum
-        if (sgd->momentum > 0.0) {
-            // Update velocity
-            weight_velocity = add(scalar_mul(weight_velocity, sgd->momentum),
-                                 scalar_mul(gamma, sgd->weight_decay));
-            bias_velocity = add(scalar_mul(bias_velocity, sgd->momentum),
-                               scalar_mul(beta, sgd->weight_decay));
-            
-            // Add gradient to velocity
-            weight_velocity = add(scalar_mul(weight_velocity, sgd->momentum), weight_velocity);
-            bias_velocity = add(scalar_mul(bias_velocity, sgd->momentum), bias_velocity);
-            
-            // Update parameters
-            gamma = sub(gamma, scalar_mul(weight_velocity, sgd->learning_rate));
-            beta = sub(beta, scalar_mul(bias_velocity, sgd->learning_rate));
-        } else {
-            // Simple SGD without momentum
-            gamma = sub(gamma, scalar_mul(scalar_mul(gamma, sgd->weight_decay), sgd->learning_rate));
-            gamma = sub(gamma, scalar_mul(weight_velocity, sgd->learning_rate));
-            beta = sub(beta, scalar_mul(bias_velocity, sgd->learning_rate));
-        }
-    } else if (const auto* adam = dynamic_cast<const Adam*>(&opt)) {
-        // Adam update
-        static std::size_t step_count = 0;
-        step_count++;
-        
-        // Update momentum
-        weight_momentum = add(scalar_mul(weight_momentum, adam->beta1),
-                             scalar_mul(weight_velocity, 1.0 - adam->beta1));
-        bias_momentum = add(scalar_mul(bias_momentum, adam->beta1),
-                           scalar_mul(bias_velocity, 1.0 - adam->beta1));
-        
-        // Update RMS
-        Matrix weight_grad_sq = hadamard(weight_velocity, weight_velocity);
-        Matrix bias_grad_sq = hadamard(bias_velocity, bias_velocity);
-        
-        weight_rms = add(scalar_mul(weight_rms, adam->beta2),
-                        scalar_mul(weight_grad_sq, 1.0 - adam->beta2));
-        bias_rms = add(scalar_mul(bias_rms, adam->beta2),
-                      scalar_mul(bias_grad_sq, 1.0 - adam->beta2));
-        
-        // Bias correction
-        double bias_correction1 = 1.0 - std::pow(adam->beta1, static_cast<double>(step_count));
-        double bias_correction2 = 1.0 - std::pow(adam->beta2, static_cast<double>(step_count));
-        
-        Matrix m_hat_w = scalar_mul(weight_momentum, 1.0 / bias_correction1);
-        Matrix m_hat_b = scalar_mul(bias_momentum, 1.0 / bias_correction1);
-        Matrix v_hat_w = scalar_mul(weight_rms, 1.0 / bias_correction2);
-        Matrix v_hat_b = scalar_mul(bias_rms, 1.0 / bias_correction2);
-        
-        // Update parameters
-        gamma = sub(gamma, scalar_mul(m_hat_w, adam->learning_rate));
-        beta = sub(beta, scalar_mul(m_hat_b, adam->learning_rate));
-        
-        // Apply weight decay if needed
-        if (adam->weight_decay > 0.0) {
-            gamma = sub(gamma, scalar_mul(gamma, adam->weight_decay * adam->learning_rate));
-        }
-    }
+    clip_gradient(weight_velocity, opt);
+    clip_gradient(bias_velocity, opt);
+    add_regularization(weight_velocity, gamma, opt);
+    add_regularization(bias_velocity, beta, opt);
+    apply_optimizer_update(opt, gamma, weight_velocity, weight_momentum, weight_rms);
+    apply_optimizer_update(opt, beta, bias_velocity, bias_momentum, bias_rms);
 }
 
 // ---------------- Optimizer Methods ----------------
@@ -1342,52 +1250,6 @@ void Adam::zero_grad() {
     // This would be called by the model before each forward pass
 }
 
-// Additional Optimizer implementations
-// For now, we'll implement RMSprop as another popular optimizer
-struct RMSprop : public Optimizer {
-    double alpha;          // Smoothing constant
-    double epsilon;        // Small value to prevent division by zero
-    double weight_decay;   // Weight decay (L2 penalty)
-    
-    explicit RMSprop(double lr = 0.001,
-                     double a = 0.99,
-                     double eps = 1e-8,
-                     double wd = 0.0)
-        : Optimizer(OptimizerType::RMSprop, lr, eps),
-          alpha(a), epsilon(eps), weight_decay(wd) {}
-    
-    void step() override {
-        // RMSprop updates are handled in layer update_parameters methods
-    }
-    
-    void zero_grad() override {
-        // Zero gradients are handled by the model
-    }
-};
-
-// AdamW optimizer - Adam with decoupled weight decay
-struct AdamW : public Optimizer {
-    double beta1;
-    double beta2;
-    double weight_decay;
-    std::size_t step_count;
-    
-    explicit AdamW(double lr = 0.001,
-                   double b1 = 0.9,
-                   double b2 = 0.999,
-                   double wd = 0.01)
-        : Optimizer(OptimizerType::AdamW, lr),
-          beta1(b1), beta2(b2), weight_decay(wd), step_count(0) {}
-    
-    void step() override {
-        step_count++;
-    }
-    
-    void zero_grad() override {
-        // Zero gradients are handled by the model
-    }
-};
-
 // ---------------- Model Implementation ----------------
 Model::Model(const Config& cfg) : config(cfg) {}
 
@@ -1430,11 +1292,13 @@ void Model::train_step(const Matrix& inputs, const Matrix& targets, LossFunction
     backward(loss_result.gradient);
     
     // Update parameters
+    optimizer->step();
     for (auto& layer : layers) {
         if (layer->trainable) {
             layer->update_parameters(*optimizer);
         }
     }
+    optimizer->update_learning_rate();
     
     // Zero gradients after update
     optimizer->zero_grad();
@@ -1565,17 +1429,29 @@ double Model::evaluate(const Matrix& X, const Matrix& y, LossFunction loss_fn) {
 }
 
 void Model::save(const std::string& filepath) const {
-    ModelSerializer::save_model(*this, filepath);
+    if (!ModelSerializer::save_model(*this, filepath)) {
+        throw std::runtime_error("Failed to save model to " + filepath);
+    }
 }
 
 void Model::load(const std::string& filepath) {
-    ModelSerializer::load_model(*this, filepath);
+    if (!ModelSerializer::load_model(*this, filepath)) {
+        throw std::runtime_error("Failed to load model from " + filepath);
+    }
 }
 
 std::size_t Model::get_parameter_count() const {
     std::size_t total = 0;
     for (const auto& layer : layers) {
-        total += layer->get_parameter_count();
+        if (auto dense = dynamic_cast<const Dense*>(layer.get())) {
+            total += dense->weights.data.size() + dense->bias.data.size();
+        } else if (auto conv = dynamic_cast<const Conv2D*>(layer.get())) {
+            total += conv->weights.data.size() + conv->bias.data.size();
+        } else if (auto batch = dynamic_cast<const BatchNorm*>(layer.get())) {
+            total += batch->gamma.data.size() + batch->beta.data.size();
+        } else {
+            total += layer->get_parameter_count();
+        }
     }
     return total;
 }
@@ -1591,409 +1467,42 @@ void Model::print_summary() const {
     }
 }
 
-// Include the model serializer
-#include "../include/model_serializer.hpp"
-
-// ---------------- Model Save/Load Implementation ----------------
-void Model::save(const std::string& filepath) const {
-    // Open file for writing in binary mode
-    ::std::ofstream file(filepath, ::std::ios::binary);
-    if (!file.is_open()) {
-        throw ::std::runtime_error("Failed to open file for writing: " + filepath);
-    }
-    
-    try {
-        // Write magic number and version
-        const uint32_t magic = 0xDNNM; // DNN Model
-        const uint32_t version = 1;
-        file.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
-        file.write(reinterpret_cast<const char*>(&version), sizeof(version));
-        
-        // Save configuration
-        file.write(reinterpret_cast<const char*>(&config.epsilon), sizeof(config.epsilon));
-        file.write(reinterpret_cast<const char*>(&config.learning_rate), sizeof(config.learning_rate));
-        file.write(reinterpret_cast<const char*>(&config.batch_size), sizeof(config.batch_size));
-        file.write(reinterpret_cast<const char*>(&config.max_epochs), sizeof(config.max_epochs));
-        file.write(reinterpret_cast<const char*>(&config.validation_split), sizeof(config.validation_split));
-        file.write(reinterpret_cast<const char*>(&config.dropout_rate), sizeof(config.dropout_rate));
-        file.write(reinterpret_cast<const char*>(&config.use_batch_norm), sizeof(config.use_batch_norm));
-        file.write(reinterpret_cast<const char*>(&config.use_layer_norm), sizeof(config.use_layer_norm));
-        
-        // Save number of layers
-        size_t num_layers = layers.size();
-        file.write(reinterpret_cast<const char*>(&num_layers), sizeof(num_layers));
-        
-        // Save each layer
-        for (const auto& layer : layers) {
-            // Save layer name length and name
-            ::std::string name = layer->name;
-            size_t name_length = name.length();
-            file.write(reinterpret_cast<const char*>(&name_length), sizeof(name_length));
-            file.write(name.c_str(), name_length);
-            
-            // Save trainable flag
-            file.write(reinterpret_cast<const char*>(&layer->trainable), sizeof(layer->trainable));
-            
-            // Save layer type and parameters based on dynamic cast
-            if (const auto* dense = dynamic_cast<const Dense*>(layer.get())) {
-                // Layer type: Dense = 0
-                uint32_t layer_type = 0;
-                file.write(reinterpret_cast<const char*>(&layer_type), sizeof(layer_type));
-                
-                // Save Dense-specific parameters
-                file.write(reinterpret_cast<const char*>(&dense->in_features), sizeof(dense->in_features));
-                file.write(reinterpret_cast<const char*>(&dense->out_features), sizeof(dense->out_features));
-                
-                // Save activation function
-                int activation = static_cast<int>(dense->activation);
-                file.write(reinterpret_cast<const char*>(&activation), sizeof(activation));
-                
-                // Save weights
-                size_t weights_size = dense->weights.size;
-                file.write(reinterpret_cast<const char*>(&weights_size), sizeof(weights_size));
-                file.write(reinterpret_cast<const char*>(dense->weights.data.data()), sizeof(double) * weights_size);
-                
-                // Save bias
-                size_t bias_size = dense->bias.size;
-                file.write(reinterpret_cast<const char*>(&bias_size), sizeof(bias_size));
-                file.write(reinterpret_cast<const char*>(dense->bias.data.data()), sizeof(double) * bias_size);
-            }
-            else if (const auto* conv2d = dynamic_cast<const Conv2D*>(layer.get())) {
-                // Layer type: Conv2D = 1
-                uint32_t layer_type = 1;
-                file.write(reinterpret_cast<const char*>(&layer_type), sizeof(layer_type));
-                
-                // Save Conv2D-specific parameters
-                file.write(reinterpret_cast<const char*>(&conv2d->in_channels), sizeof(conv2d->in_channels));
-                file.write(reinterpret_cast<const char*>(&conv2d->out_channels), sizeof(conv2d->out_channels));
-                file.write(reinterpret_cast<const char*>(&conv2d->kernel_height), sizeof(conv2d->kernel_height));
-                file.write(reinterpret_cast<const char*>(&conv2d->kernel_width), sizeof(conv2d->kernel_width));
-                file.write(reinterpret_cast<const char*>(&conv2d->stride_h), sizeof(conv2d->stride_h));
-                file.write(reinterpret_cast<const char*>(&conv2d->stride_w), sizeof(conv2d->stride_w));
-                file.write(reinterpret_cast<const char*>(&conv2d->padding_h), sizeof(conv2d->padding_h));
-                file.write(reinterpret_cast<const char*>(&conv2d->padding_w), sizeof(conv2d->padding_w));
-                
-                // Save activation function
-                int activation = static_cast<int>(conv2d->activation);
-                file.write(reinterpret_cast<const char*>(&activation), sizeof(activation));
-                
-                // Save weights
-                size_t weights_size = conv2d->weights.size;
-                file.write(reinterpret_cast<const char*>(&weights_size), sizeof(weights_size));
-                file.write(reinterpret_cast<const char*>(conv2d->weights.data.data()), sizeof(double) * weights_size);
-                
-                // Save bias
-                size_t bias_size = conv2d->bias.size;
-                file.write(reinterpret_cast<const char*>(&bias_size), sizeof(bias_size));
-                file.write(reinterpret_cast<const char*>(conv2d->bias.data.data()), sizeof(double) * bias_size);
-            }
-            else if (const auto* maxpool = dynamic_cast<const MaxPool2D*>(layer.get())) {
-                // Layer type: MaxPool2D = 2
-                uint32_t layer_type = 2;
-                file.write(reinterpret_cast<const char*>(&layer_type), sizeof(layer_type));
-                
-                // Save MaxPool2D-specific parameters
-                file.write(reinterpret_cast<const char*>(&maxpool->pool_height), sizeof(maxpool->pool_height));
-                file.write(reinterpret_cast<const char*>(&maxpool->pool_width), sizeof(maxpool->pool_width));
-                file.write(reinterpret_cast<const char*>(&maxpool->stride_h), sizeof(maxpool->stride_h));
-                file.write(reinterpret_cast<const char*>(&maxpool->stride_w), sizeof(maxpool->stride_w));
-            }
-            else if (const auto* dropout = dynamic_cast<const Dropout*>(layer.get())) {
-                // Layer type: Dropout = 3
-                uint32_t layer_type = 3;
-                file.write(reinterpret_cast<const char*>(&layer_type), sizeof(layer_type));
-                
-                // Save Dropout-specific parameters
-                file.write(reinterpret_cast<const char*>(&dropout->rate), sizeof(dropout->rate));
-            }
-            else if (const auto* batchnorm = dynamic_cast<const BatchNorm*>(layer.get())) {
-                // Layer type: BatchNorm = 4
-                uint32_t layer_type = 4;
-                file.write(reinterpret_cast<const char*>(&layer_type), sizeof(layer_type));
-                
-                // Save BatchNorm-specific parameters
-                file.write(reinterpret_cast<const char*>(&batchnorm->features), sizeof(batchnorm->features));
-                file.write(reinterpret_cast<const char*>(&batchnorm->momentum), sizeof(batchnorm->momentum));
-                file.write(reinterpret_cast<const char*>(&batchnorm->epsilon), sizeof(batchnorm->epsilon));
-                
-                // Save gamma
-                size_t gamma_size = batchnorm->gamma.size;
-                file.write(reinterpret_cast<const char*>(&gamma_size), sizeof(gamma_size));
-                file.write(reinterpret_cast<const char*>(batchnorm->gamma.data.data()), sizeof(double) * gamma_size);
-                
-                // Save beta
-                size_t beta_size = batchnorm->beta.size;
-                file.write(reinterpret_cast<const char*>(&beta_size), sizeof(beta_size));
-                file.write(reinterpret_cast<const char*>(batchnorm->beta.data.data()), sizeof(double) * beta_size);
-                
-                // Save running_mean
-                size_t running_mean_size = batchnorm->running_mean.size;
-                file.write(reinterpret_cast<const char*>(&running_mean_size), sizeof(running_mean_size));
-                file.write(reinterpret_cast<const char*>(batchnorm->running_mean.data.data()), sizeof(double) * running_mean_size);
-                
-                // Save running_var
-                size_t running_var_size = batchnorm->running_var.size;
-                file.write(reinterpret_cast<const char*>(&running_var_size), sizeof(running_var_size));
-                file.write(reinterpret_cast<const char*>(batchnorm->running_var.data.data()), sizeof(double) * running_var_size);
-            }
-        }
-        
-        file.close();
-    } catch (...) {
-        file.close();
-        throw ::std::runtime_error("Failed to save model to " + filepath);
-    }
+std::size_t Model::layer_count() const {
+    return layers.size();
 }
 
-void Model::load(const std::string& filepath) {
-    // Open file for reading in binary mode
-    ::std::ifstream file(filepath, ::std::ios::binary);
-    if (!file.is_open()) {
-        throw ::std::runtime_error("Failed to open file for reading: " + filepath);
+std::size_t Model::parameter_count(std::size_t index) const {
+    if (index >= layers.size()) {
+        throw std::out_of_range("Layer index out of range");
     }
-    
-    try {
-        // Read and verify magic number and version
-        uint32_t magic, version;
-        file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
-        file.read(reinterpret_cast<char*>(&version), sizeof(version));
-        
-        if (magic != 0xDNNM) {
-            throw ::std::runtime_error("Invalid file format: " + filepath);
-        }
-        
-        if (version != 1) {
-            throw ::std::runtime_error("Unsupported version: " + ::std::to_string(version));
-        }
-        
-        // Load configuration
-        file.read(reinterpret_cast<char*>(&config.epsilon), sizeof(config.epsilon));
-        file.read(reinterpret_cast<char*>(&config.learning_rate), sizeof(config.learning_rate));
-        file.read(reinterpret_cast<char*>(&config.batch_size), sizeof(config.batch_size));
-        file.read(reinterpret_cast<char*>(&config.max_epochs), sizeof(config.max_epochs));
-        file.read(reinterpret_cast<char*>(&config.validation_split), sizeof(config.validation_split));
-        file.read(reinterpret_cast<char*>(&config.dropout_rate), sizeof(config.dropout_rate));
-        file.read(reinterpret_cast<char*>(&config.use_batch_norm), sizeof(config.use_batch_norm));
-        file.read(reinterpret_cast<char*>(&config.use_layer_norm), sizeof(config.use_layer_norm));
-        
-        // Clear existing layers
-        layers.clear();
-        
-        // Load number of layers
-        size_t num_layers;
-        file.read(reinterpret_cast<char*>(&num_layers), sizeof(num_layers));
-        
-        // Load each layer
-        for (size_t i = 0; i < num_layers; ++i) {
-            // Load layer name length and name
-            size_t name_length;
-            file.read(reinterpret_cast<char*>(&name_length), sizeof(name_length));
-            ::std::string name(name_length, ' ');
-            file.read(&name[0], name_length);
-            
-            // Load trainable flag
-            bool trainable;
-            file.read(reinterpret_cast<char*>(&trainable), sizeof(trainable));
-            
-            // Load layer type and parameters
-            uint32_t layer_type;
-            file.read(reinterpret_cast<char*>(&layer_type), sizeof(layer_type));
-            
-            switch (layer_type) {
-                case 0: { // Dense
-                    // Load Dense-specific parameters
-                    size_t in_features, out_features;
-                    file.read(reinterpret_cast<char*>(&in_features), sizeof(in_features));
-                    file.read(reinterpret_cast<char*>(&out_features), sizeof(out_features));
-                    
-                    // Load activation function
-                    int activation_int;
-                    file.read(reinterpret_cast<char*>(&activation_int), sizeof(activation_int));
-                    Activation activation = static_cast<Activation>(activation_int);
-                    
-                    // Create layer
-                    auto layer = ::std::make_unique<Dense>(in_features, out_features, activation, name);
-                    layer->trainable = trainable;
-                    
-                    // Load weights
-                    size_t weights_size;
-                    file.read(reinterpret_cast<char*>(&weights_size), sizeof(weights_size));
-                    layer->weights.data.resize(weights_size);
-                    file.read(reinterpret_cast<char*>(layer->weights.data.data()), sizeof(double) * weights_size);
-                    
-                    // Load bias
-                    size_t bias_size;
-                    file.read(reinterpret_cast<char*>(&bias_size), sizeof(bias_size));
-                    layer->bias.data.resize(bias_size);
-                    file.read(reinterpret_cast<char*>(layer->bias.data.data()), sizeof(double) * bias_size);
-                    
-                    layers.push_back(::std::move(layer));
-                    break;
-                }
-                case 1: { // Conv2D
-                    // Load Conv2D-specific parameters
-                    size_t in_channels, out_channels, kernel_height, kernel_width;
-                    size_t stride_h, stride_w, padding_h, padding_w;
-                    file.read(reinterpret_cast<char*>(&in_channels), sizeof(in_channels));
-                    file.read(reinterpret_cast<char*>(&out_channels), sizeof(out_channels));
-                    file.read(reinterpret_cast<char*>(&kernel_height), sizeof(kernel_height));
-                    file.read(reinterpret_cast<char*>(&kernel_width), sizeof(kernel_width));
-                    file.read(reinterpret_cast<char*>(&stride_h), sizeof(stride_h));
-                    file.read(reinterpret_cast<char*>(&stride_w), sizeof(stride_w));
-                    file.read(reinterpret_cast<char*>(&padding_h), sizeof(padding_h));
-                    file.read(reinterpret_cast<char*>(&padding_w), sizeof(padding_w));
-                    
-                    // Load activation function
-                    int activation_int;
-                    file.read(reinterpret_cast<char*>(&activation_int), sizeof(activation_int));
-                    Activation activation = static_cast<Activation>(activation_int);
-                    
-                    // Create layer
-                    auto layer = ::std::make_unique<Conv2D>(in_channels, out_channels, kernel_height, kernel_width,
-                                                       stride_h, stride_w, padding_h, padding_w, activation, name);
-                    layer->trainable = trainable;
-                    
-                    // Load weights
-                    size_t weights_size;
-                    file.read(reinterpret_cast<char*>(&weights_size), sizeof(weights_size));
-                    layer->weights.data.resize(weights_size);
-                    file.read(reinterpret_cast<char*>(layer->weights.data.data()), sizeof(double) * weights_size);
-                    
-                    // Load bias
-                    size_t bias_size;
-                    file.read(reinterpret_cast<char*>(&bias_size), sizeof(bias_size));
-                    layer->bias.data.resize(bias_size);
-                    file.read(reinterpret_cast<char*>(layer->bias.data.data()), sizeof(double) * bias_size);
-                    
-                    layers.push_back(::std::move(layer));
-                    break;
-                }
-                case 2: { // MaxPool2D
-                    // Load MaxPool2D-specific parameters
-                    size_t pool_height, pool_width, stride_h, stride_w;
-                    file.read(reinterpret_cast<char*>(&pool_height), sizeof(pool_height));
-                    file.read(reinterpret_cast<char*>(&pool_width), sizeof(pool_width));
-                    file.read(reinterpret_cast<char*>(&stride_h), sizeof(stride_h));
-                    file.read(reinterpret_cast<char*>(&stride_w), sizeof(stride_w));
-                    
-                    // Create layer
-                    auto layer = ::std::make_unique<MaxPool2D>(pool_height, pool_width, stride_h, stride_w, name);
-                    layer->trainable = trainable;
-                    
-                    layers.push_back(::std::move(layer));
-                    break;
-                }
-                case 3: { // Dropout
-                    // Load Dropout-specific parameters
-                    double rate;
-                    file.read(reinterpret_cast<char*>(&rate), sizeof(rate));
-                    
-                    // Create layer
-                    auto layer = ::std::make_unique<Dropout>(rate, name);
-                    layer->trainable = trainable;
-                    
-                    layers.push_back(::std::move(layer));
-                    break;
-                }
-                case 4: { // BatchNorm
-                    // Load BatchNorm-specific parameters
-                    size_t features;
-                    double momentum, epsilon;
-                    file.read(reinterpret_cast<char*>(&features), sizeof(features));
-                    file.read(reinterpret_cast<char*>(&momentum), sizeof(momentum));
-                    file.read(reinterpret_cast<char*>(&epsilon), sizeof(epsilon));
-                    
-                    // Create layer
-                    auto layer = ::std::make_unique<BatchNorm>(features, momentum, epsilon, name);
-                    layer->trainable = trainable;
-                    
-                    // Load gamma
-                    size_t gamma_size;
-                    file.read(reinterpret_cast<char*>(&gamma_size), sizeof(gamma_size));
-                    layer->gamma.data.resize(gamma_size);
-                    file.read(reinterpret_cast<char*>(layer->gamma.data.data()), sizeof(double) * gamma_size);
-                    
-                    // Load beta
-                    size_t beta_size;
-                    file.read(reinterpret_cast<char*>(&beta_size), sizeof(beta_size));
-                    layer->beta.data.resize(beta_size);
-                    file.read(reinterpret_cast<char*>(layer->beta.data.data()), sizeof(double) * beta_size);
-                    
-                    // Load running_mean
-                    size_t running_mean_size;
-                    file.read(reinterpret_cast<char*>(&running_mean_size), sizeof(running_mean_size));
-                    layer->running_mean.data.resize(running_mean_size);
-                    file.read(reinterpret_cast<char*>(layer->running_mean.data.data()), sizeof(double) * running_mean_size);
-                    
-                    // Load running_var
-                    size_t running_var_size;
-                    file.read(reinterpret_cast<char*>(&running_var_size), sizeof(running_var_size));
-                    layer->running_var.data.resize(running_var_size);
-                    file.read(reinterpret_cast<char*>(layer->running_var.data.data()), sizeof(double) * running_var_size);
-                    
-                    layers.push_back(::std::move(layer));
-                    break;
-                }
-                default:
-                    throw ::std::runtime_error("Unknown layer type in model file: " + ::std::to_string(layer_type));
-            }
-        }
-        
-        file.close();
-    } catch (...) {
-        file.close();
-        throw ::std::runtime_error("Failed to load model from " + filepath);
+    const auto& layer = layers[index];
+    if (auto dense = dynamic_cast<const Dense*>(layer.get())) {
+        return dense->weights.data.size() + dense->bias.data.size();
     }
+    if (auto conv = dynamic_cast<const Conv2D*>(layer.get())) {
+        return conv->weights.data.size() + conv->bias.data.size();
+    }
+    if (auto batch = dynamic_cast<const BatchNorm*>(layer.get())) {
+        return batch->gamma.data.size() + batch->beta.data.size();
+    }
+    return layer->get_parameter_count();
 }
 
-// ---------------- Utility Functions ----------------
-Matrix one_hot(const std::vector<int>& labels, int num_classes) {
-    if (num_classes <= 0) {
-        throw std::invalid_argument("one_hot: num_classes <= 0");
-    }
-    
-    Matrix y(labels.size(), static_cast<std::size_t>(num_classes), 0.0);
-    for (std::size_t i = 0; i < labels.size(); ++i) {
-        if (labels[i] < 0 || labels[i] >= num_classes) {
-            throw std::invalid_argument("one_hot: label OOR");
-        }
-        y(i, static_cast<std::size_t>(labels[i])) = 1.0;
-    }
-    return y;
+const Config& Model::get_config() const {
+    return config;
 }
 
-double accuracy(const Matrix& predictions, const std::vector<int>& labels) {
-    if (predictions.shape[0] != labels.size()) {
-        throw std::invalid_argument("accuracy: size mismatch");
-    }
-    
-    std::size_t correct = 0;
-    for (std::size_t r = 0; r < predictions.shape[0]; ++r) {
-        std::size_t argmax = 0;
-        double best = predictions(r, 0);
-        for (std::size_t c = 1; c < predictions.shape[1]; ++c) {
-            if (predictions(r, c) > best) {
-                best = predictions(r, c);
-                argmax = c;
-            }
-        }
-        if (static_cast<int>(argmax) == labels[r]) {
-            ++correct;
-        }
-    }
-    
-    return static_cast<double>(correct) / static_cast<double>(labels.size());
+Config& Model::get_config() {
+    return config;
 }
 
-Matrix normalize(const Matrix& input, double mean, double stddev) {
-    Matrix normalized(input.shape[0], input.shape[1]);
-    for (std::size_t i = 0; i < input.size; ++i) {
-        normalized.data[i] = (input.data[i] - mean) / stddev;
-    }
-    return normalized;
+const Optimizer* Model::get_optimizer() const {
+    return optimizer.get();
 }
 
-std::pair<Matrix, Matrix> train_test_split(const Matrix& X, const Matrix& y, double test_size, std::mt19937& rng) {
+void Model::set_optimizer(std::unique_ptr<Optimizer> opt) {
+    optimizer = std::move(opt);
+}std::pair<Matrix, Matrix> train_test_split(const Matrix& X, const Matrix& y, double test_size, std::mt19937& rng) {
     std::size_t total_samples = X.shape[0];
     std::size_t test_samples = static_cast<std::size_t>(static_cast<double>(total_samples) * test_size);
     std::size_t train_samples = total_samples - test_samples;

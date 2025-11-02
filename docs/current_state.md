@@ -93,17 +93,16 @@ This document provides a comprehensive assessment of the current implementation 
 ## Partially Implemented Components
 
 ### 1. Model Persistence
-- ⚠️ Save/Load methods (only placeholders implemented)
-- Missing serialization logic
-- No file format specification
+- ✅ Save/Load methods implemented with binary format and integrity checks
+- ✅ Layer parameters, optimizer state, and config serialized/deserialized
+- ⚠️ Additional round-trip scenarios and error-path tests planned
 
 ### 2. Advanced Optimizers
-- ⚠️ RMSprop defined but integration may be incomplete
-- ⚠️ AdamW defined but integration may be incomplete
+- ✅ RMSprop and AdamW fully integrated alongside SGD/Adam
 
 ### 3. Layer Features
-- ⚠️ Some optimizer state management in layers could be more robust
-- ⚠️ Conv2D implementation may need verification for edge cases
+- ✅ Optimizer state management standardised across Dense, Conv2D, BatchNorm
+- ⚠️ Expanded numerical validation and edge-case testing still required
 
 ## Missing Components
 

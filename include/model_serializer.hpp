@@ -6,11 +6,16 @@
 #include <memory>
 #include <fstream>
 #include <vector>
+#include <cstddef>
 
 // Forward declarations to avoid circular dependency
 namespace dnn {
     class Model;
     class Layer;
+    class Optimizer;
+    template<std::size_t NumDims>
+    struct Tensor;
+    using Matrix = Tensor<2>;
 }
 
 namespace dnn {
@@ -56,6 +61,12 @@ private:
     
     // Load layer information
     static std::unique_ptr<Layer> load_layer(std::ifstream& file);
+    
+    static void save_optimizer(std::ofstream& file, const Optimizer* optimizer);
+    static std::unique_ptr<Optimizer> load_optimizer(std::ifstream& file);
+    static void write_matrix(std::ofstream& file, const Matrix& matrix);
+    static void read_matrix(std::ifstream& file, Matrix& matrix);
+    static void sync_matrix_metadata(Matrix& matrix);
 };
 
 // Implementation of template methods

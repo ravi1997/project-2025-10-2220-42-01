@@ -4,6 +4,8 @@
 #include <vector>
 #include <random>
 #include <cassert>
+#include <numeric>
+#include <cmath>
 
 int main() {
     std::cout << "Testing Model Persistence..." << std::endl;
@@ -19,7 +21,7 @@ int main() {
     // Compile with optimizer
     auto optimizer = std::make_unique<dnn::SGD>(0.01, 0.9);
     model.compile(std::move(optimizer));
-    
+
     // Create some dummy training data
     dnn::Matrix X({4, 2});
     X.data[0] = 0.0; X.data[1] = 0.0;
@@ -36,6 +38,7 @@ int main() {
     // Train the model briefly to set some parameters
     std::mt19937 rng(42);
     std::cout << "Training model..." << std::endl;
+    std::cout << "Initial parameter count: " << model.get_parameter_count() << std::endl;
     model.fit(X, y, 10, dnn::LossFunction::MSE, rng, 0.0, false); // 10 epochs, no verbose
     
     // Save the model
@@ -49,8 +52,11 @@ int main() {
     loaded_model.load(filepath);
     
     // Verify that the loaded model has the same structure
-    assert(loaded_model.layers.size() == model.layers.size());
-    std::cout << "Layer count matches: " << loaded_model.layers.size() << std::endl;
+    assert(loaded_model.layer_count() == model.layer_count());
+    std::cout << "Layer count matches: " << loaded_model.layer_count() << std::endl;
+
+    assert(loaded_model.get_optimizer() != nullptr);
+    std::cout << "Optimizer restored successfully." << std::endl;
     
     // Test predictions match
     dnn::Matrix original_pred = model.predict(X);
@@ -74,6 +80,8 @@ int main() {
     // Test that both models have same parameter count
     size_t original_params = model.get_parameter_count();
     size_t loaded_params = loaded_model.get_parameter_count();
+    std::cout << "Original parameter count: " << original_params << std::endl;
+    std::cout << "Loaded parameter count: " << loaded_params << std::endl;
     
     if (original_params == loaded_params) {
         std::cout << "SUCCESS: Parameter counts match (" << original_params << ")" << std::endl;
@@ -82,7 +90,23 @@ int main() {
                   << original_params << " vs " << loaded_params << ")" << std::endl;
         return 1;
     }
-    
+
+    // Verify Conv2D gradients propagate correctly
+    {
+        dnn::Conv2D conv_layer(1, 1, 1, 1);
+        dnn::Matrix conv_input({1, 4});
+        conv_input.data = {1.0, 2.0, 3.0, 4.0};
+        dnn::Matrix conv_output = conv_layer.forward(conv_input);
+        dnn::Matrix grad_out(conv_output.shape[0], conv_output.shape[1]);
+        std::fill(grad_out.data.begin(), grad_out.data.end(), 1.0);
+        dnn::Matrix grad_in = conv_layer.backward(grad_out);
+        (void)grad_in; // silence unused warning in case optimization removes it
+        double expected_weight_grad = std::accumulate(conv_input.data.begin(), conv_input.data.end(), 0.0);
+        double expected_bias_grad = static_cast<double>(grad_out.size);
+        assert(std::abs(conv_layer.weight_velocity.data[0] - expected_weight_grad) < 1e-9);
+        assert(std::abs(conv_layer.bias_velocity.data[0] - expected_bias_grad) < 1e-9);
+    }
+
     std::cout << "All tests passed!" << std::endl;
     return 0;
 }

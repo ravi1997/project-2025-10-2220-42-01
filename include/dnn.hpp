@@ -76,6 +76,8 @@
 
 namespace dnn {
 
+class ModelSerializer;
+
 // ---------------- Configuration ----------------
 struct Config {
     // Compile-time flags for optimization
@@ -400,7 +402,6 @@ struct Dense : public Layer {
           weight_velocity(std::array<std::size_t, 2>{in, out}), bias_velocity(std::array<std::size_t, 2>{1, out}),
           weight_momentum(std::array<std::size_t, 2>{in, out}), bias_momentum(std::array<std::size_t, 2>{1, out}),
           weight_rms(std::array<std::size_t, 2>{in, out}), bias_rms(std::array<std::size_t, 2>{1, out}) {
-        
         initialize_weights(rng);
     }
     
@@ -461,7 +462,7 @@ struct Dense : public Layer {
     Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
     
     std::size_t get_parameter_count() const override {
-        return weights.size + bias.size;
+        return weights.data.size() + bias.data.size();
     }
 };
 
@@ -479,6 +480,10 @@ struct Conv2D : public Layer {
     // Caches
     std::vector<Matrix> input_patches;  // For backward pass
     Matrix input_cache;  // Store input for backward pass
+    Matrix pre_activation_cache;
+    Matrix post_activation_cache;
+    std::size_t last_input_height{0};
+    std::size_t last_input_width{0};
     
     // Optimizer state
     Matrix weight_velocity;
@@ -536,7 +541,7 @@ struct Conv2D : public Layer {
     Matrix backward(const Matrix& grad_output) override;
     void update_parameters(const struct Optimizer& opt) override;
     std::size_t get_parameter_count() const override {
-        return weights.size + bias.size;
+        return weights.data.size() + bias.data.size();
     }
 };
 
@@ -620,7 +625,7 @@ struct BatchNorm : public Layer {
     Matrix backward(const Matrix& grad_output) override;
     void update_parameters(const struct Optimizer& opt) override;
     std::size_t get_parameter_count() const override {
-        return gamma.size + beta.size;
+        return gamma.data.size() + beta.data.size();
     }
 };
 
@@ -789,6 +794,41 @@ struct Adam : public Optimizer {
     void zero_grad() override;
 };
 
+// ---------------- RMSprop Optimizer ----------------
+struct RMSprop : public Optimizer {
+    double alpha;
+    double epsilon;
+    double weight_decay;
+    
+    explicit RMSprop(double lr = 0.001,
+                     double a = 0.99,
+                     double eps = 1e-8,
+                     double wd = 0.0)
+        : Optimizer(OptimizerType::RMSprop, lr, eps),
+          alpha(a), epsilon(eps), weight_decay(wd) {}
+    
+    void step() override {}
+    void zero_grad() override {}
+};
+
+// ---------------- AdamW Optimizer ----------------
+struct AdamW : public Optimizer {
+    double beta1;
+    double beta2;
+    double weight_decay;
+    std::size_t step_count;
+    
+    explicit AdamW(double lr = 0.001,
+                   double b1 = 0.9,
+                   double b2 = 0.999,
+                   double wd = 0.01)
+        : Optimizer(OptimizerType::AdamW, lr),
+          beta1(b1), beta2(b2), weight_decay(wd), step_count(0) {}
+    
+    void step() override { ++step_count; }
+    void zero_grad() override {}
+};
+
 // ---------------- Neural Network Model ----------------
 class Model {
 private:
@@ -797,6 +837,8 @@ private:
     Config config;
     
 public:
+    friend class ModelSerializer;
+    
     explicit Model(const Config& cfg = Config{});
     
     void add(std::unique_ptr<Layer> layer);
@@ -822,6 +864,13 @@ public:
     std::size_t get_parameter_count() const;
     
     void print_summary() const;
+    
+    std::size_t layer_count() const;
+    std::size_t parameter_count(std::size_t index) const;
+    const Config& get_config() const;
+    Config& get_config();
+    const Optimizer* get_optimizer() const;
+    void set_optimizer(std::unique_ptr<Optimizer> opt);
 };
 
 

@@ -5,43 +5,18 @@ This document identifies specific gaps in the current implementation of the DNN 
 
 ## Critical Gaps
 
-### 1. Model Persistence
-**Gap**: Only placeholder implementations for save/load functionality
-**Impact**: Users cannot save trained models or load pre-trained models
-**Location**: `Model::save()` and `Model::load()` in `src/dnn.cpp`
+### 1. Numerical Stability Guardrails
+**Gap**: Need to harden activation and loss computations against extreme values
+**Impact**: Potential NaNs/Inf during training on aggressive datasets
+**Location**: Softmax, cross-entropy, KL divergence, division-heavy ops
 **Priority**: High
 
 **Details**:
-- Current implementations only print messages to console
-- No serialization logic for model parameters
-- No file format specification
-- No error handling for file operations
+- Max-subtraction exists for softmax, but epsilon handling/log protection should be standardised
+- Loss functions require consistent clipping utilities
+- Lacking regression tests focused on pathological inputs
 
-### 2. Conv2D Layer Implementation Verification
-**Gap**: Potential issues in Conv2D backward pass implementation
-**Impact**: Incorrect gradient computation could lead to poor training
-**Location**: `Conv2D::backward()` in `src/dnn.cpp`
-**Priority**: High
-
-**Details**:
-- The backward pass implementation may not correctly handle all tensor dimensions
-- Missing velocity members in Conv2D class for optimizer integration
-- Gradient computation may not be correctly mapped to input dimensions
-
-### 3. Optimizer Integration Issues
-**Gap**: Inconsistent optimizer state management across layers
-**Impact**: Suboptimal parameter updates, convergence issues
-**Location**: Various layer update methods
-**Priority**: High
-
-**Details**:
-- Some layers may not properly maintain optimizer state (momentum, RMS)
-- Inconsistent handling of optimizer-specific parameters
-- Missing validation of optimizer compatibility with layer types
-
-## Medium Priority Gaps
-
-### 4. Memory Management
+### 2. Memory Management
 **Gap**: Potential memory inefficiencies
 **Impact**: Higher memory usage than necessary
 **Location**: Tensor and matrix operations
@@ -52,7 +27,7 @@ This document identifies specific gaps in the current implementation of the DNN 
 - Potential for memory pooling to reduce allocations
 - Copy operations could be replaced with move operations in some cases
 
-### 5. Error Handling
+### 3. Error Handling
 **Gap**: Inconsistent error handling across the library
 **Impact**: Difficult to debug issues in user code
 **Location**: Throughout the codebase
@@ -63,18 +38,9 @@ This document identifies specific gaps in the current implementation of the DNN 
 - Missing validation of input parameters in some functions
 - Inconsistent error message formatting
 
-### 6. Numerical Stability
-**Gap**: Potential numerical stability issues
-**Impact**: Training instability, NaN values
-**Location**: Activation functions, loss functions
-**Priority**: Medium
+## Medium Priority Gaps
 
-**Details**:
-- Softmax implementation could be more numerically stable
-- Log operations in loss functions need protection against invalid inputs
-- Division operations need checks for zero denominators
-
-### 7. Performance Optimization
+### 4. Performance Optimization
 **Gap**: Suboptimal performance in some operations
 **Impact**: Slower training times
 **Location**: Matrix operations, activation functions
@@ -87,7 +53,7 @@ This document identifies specific gaps in the current implementation of the DNN 
 
 ## Low Priority Gaps
 
-### 8. Advanced Features
+### 5. Advanced Features
 **Gap**: Missing advanced neural network features
 **Impact**: Limited to basic neural networks
 **Location**: Missing layer types and features
@@ -99,7 +65,7 @@ This document identifies specific gaps in the current implementation of the DNN 
 - No advanced normalization techniques
 - No advanced activation functions
 
-### 9. Testing Infrastructure
+### 6. Testing Infrastructure
 **Gap**: Missing comprehensive testing
 **Impact**: Potential undetected bugs
 **Location**: No test files beyond examples
@@ -111,7 +77,7 @@ This document identifies specific gaps in the current implementation of the DNN 
 - No performance regression tests
 - No validation of numerical correctness
 
-### 10. Documentation
+### 7. Documentation
 **Gap**: Missing comprehensive documentation
 **Impact**: Difficult for users to understand and use the library
 **Location**: No API documentation
