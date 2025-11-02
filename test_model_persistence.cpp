@@ -131,6 +131,26 @@ int main() {
         for (double v : loss.gradient.data) {
             assert(std::isfinite(v));
         }
+
+        dnn::Matrix bce_pred({1, 1});
+        dnn::Matrix bce_true({1, 1});
+        bce_pred(0, 0) = 1.0;  // extreme probability
+        bce_true(0, 0) = 0.0;
+        auto bce_loss = dnn::compute_loss(bce_true, bce_pred, dnn::LossFunction::BinaryCrossEntropy);
+        assert(std::isfinite(bce_loss.value));
+        for (double v : bce_loss.gradient.data) {
+            assert(std::isfinite(v));
+        }
+
+        dnn::Matrix kl_p({1, 2});
+        dnn::Matrix kl_q({1, 2});
+        kl_p(0, 0) = 1.0; kl_p(0, 1) = 0.0;
+        kl_q(0, 0) = 0.0; kl_q(0, 1) = 1.0;
+        auto kl_loss = dnn::compute_loss(kl_p, kl_q, dnn::LossFunction::KLDivergence);
+        assert(std::isfinite(kl_loss.value));
+        for (double v : kl_loss.gradient.data) {
+            assert(std::isfinite(v));
+        }
     }
 
     std::cout << "All tests passed!" << std::endl;

@@ -106,7 +106,7 @@ This document provides a comprehensive assessment of the current implementation 
 - ⚠️ Expanded numerical validation and edge-case testing still required
 
 ### 4. Numerical Stability
-- ⚠️ Softplus overflow protections and softmax clipping smoke tests in place
+- ⚠️ Softplus overflow protections and shared probability clamp utilities in place
 - ⚠️ Broader activation/loss audit and negative-path testing still pending
 - ⚠️ Shared epsilon/clamping utilities to be introduced for consistency
 

@@ -122,6 +122,7 @@ f'(x) = f(x) * (1 - f(x))
 - Numerically stable implementation with overflow protection
 - Outputs always between 0 and 1
 - Suffers from vanishing gradient for extreme inputs
+- Utilises a shared `stable_sigmoid` helper to avoid overflow for large |x|
 
 ### Tanh (Hyperbolic Tangent)
 Tanh maps any real value to the range (-1, 1).
@@ -180,6 +181,7 @@ f'(x) = f(x) + sigmoid(x) * (1 - f(x))
 - Combination of linear and sigmoid
 - Smooth, non-monotonic behavior
 - Requires sigmoid computation
+- Leverages the same `stable_sigmoid` core used by Sigmoid/Softplus for numerical safety
 
 ### GELU (Gaussian Error Linear Unit)
 GELU uses the Gaussian CDF for smooth approximation.
@@ -219,6 +221,7 @@ f'(x) = sigmoid(x)
 - Smooth, differentiable everywhere
 - Computationally more expensive than ReLU
 - Always positive output
+- Evaluated via `log1p`/`exp` combination to remain stable for large |x|
 
 ## Usage in Layers
 
@@ -251,9 +254,9 @@ dnn::Matrix grad = dnn::apply_activation_derivative(output, gradient, dnn::Activ
 - Memory usage is O(n) where n is tensor size
 
 ### Numerical Stability
-- Overflow protection in exponential functions
-- Proper handling of extreme values
-- Stable implementations to prevent NaN propagation
+- Overflow protection in exponential functions via `stable_sigmoid`, `log1p`, and max-subtraction.
+- Probabilities are clamped to `[ε, 1-ε]` (`ε = 1e-12`) before log/division operations to avoid NaNs.
+- Softplus, softmax, sigmoid, and swish all reuse the shared numerical guard utilities introduced in Phase 1.
 
 ## Choosing the Right Activation Function
 

@@ -55,6 +55,7 @@ Gradient = (softmax(y_pred) - y_true) / n
 #### Implementation Details
 - Combined softmax and cross-entropy for numerical stability
 - Gradient computation with proper scaling
+- Softmax outputs are clamped to `[ε, 1-ε]` (`ε = 1e-12`) before any log/division operations
 - Protection against log(0) with epsilon clipping
 
 ### Binary Cross Entropy Loss
@@ -75,6 +76,7 @@ Gradient = (y_pred - y_true) / n
 - Clipping to prevent log(0)
 - Stable gradient computation
 - Proper handling of edge cases
+- Shared probability clamp ensures `log(1 - y_pred)` remains finite
 
 ### Hinge Loss
 Hinge loss is used for training classifiers, particularly SVMs.
@@ -132,6 +134,7 @@ Gradient = log(Q) - log(P) + 1
 - Proper handling of log(0) with epsilon
 - Numerical stability for probability distributions
 - Symmetric gradient computation
+- Both P and Q distributions are clamped to `[ε, 1-ε]` prior to ratio/log evaluation
 
 ## Loss Result Structure
 ```cpp
@@ -164,9 +167,9 @@ dnn::Matrix gradient = result.gradient;
 ## Performance Considerations
 
 ### Numerical Stability
-- Epsilon clipping to prevent log(0) and division by zero
-- Stable softmax computation with max-subtraction
-- Gradient clipping where appropriate
+- Consistent epsilon (`ε = 1e-12`) applied to all probability-based operations
+- Stable softmax computation with max-subtraction and probability clamping
+- Binary/softmax/KL losses reuse shared helpers to avoid division-by-zero and NaN propagation
 
 ### Memory Efficiency
 - In-place operations where possible

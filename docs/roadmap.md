@@ -51,9 +51,10 @@ This roadmap outlines the prioritized actions needed to transform the current DN
 **Progress**:
 - Softplus overflow protection and softmax smoke tests committed.
 - Persistence regression now checks for NaN/Inf propagation.
+- Probability clamp utilities shared across activations and loss functions.
 
 **Planned**:
-- Introduce shared epsilon/clamp utilities for all activations and losses.
+- Expose epsilon/clamp configuration knobs and document recommended defaults.
 - Add adversarial regression datasets to automated tests.
 - Profile training loops for numerical hotspots.
 

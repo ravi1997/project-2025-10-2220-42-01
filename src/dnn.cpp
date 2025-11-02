@@ -36,9 +36,36 @@ static inline bool is_finite(double x) noexcept {
     return std::isfinite(x) != 0;
 }
 
+static constexpr double kProbEpsilon = 1e-12;
+
+static inline double clamp_probability(double x) noexcept {
+    if (x < kProbEpsilon) {
+        return kProbEpsilon;
+    }
+    double upper = 1.0 - kProbEpsilon;
+    if (x > upper) {
+        return upper;
+    }
+    return x;
+}
+
+static inline void clamp_matrix_probabilities(Matrix& m) {
+    for (double& v : m.data) {
+        v = clamp_probability(v);
+    }
+}
+
 static inline double safe_log(double x) noexcept {
-    constexpr double eps = 1e-15;
-    return std::log(x > eps ? x : eps);
+    return std::log(clamp_probability(x));
+}
+
+static inline double stable_sigmoid(double x) noexcept {
+    if (x >= 0.0) {
+        const double e = std::exp(-x);
+        return 1.0 / (1.0 + e);
+    }
+    const double e = std::exp(x);
+    return e / (1.0 + e);
 }
 
 static inline double stable_softplus(double x) noexcept {
@@ -369,14 +396,7 @@ Matrix apply_activation(const Matrix& z, Activation act) {
         
         case Activation::Sigmoid:
             for (std::size_t i = 0; i < z.size; ++i) {
-                const double x = z.data[i];
-                if (x >= 0) {
-                    const double e = std::exp(-x);
-                    a.data[i] = 1.0 / (1.0 + e);
-                } else {
-                    const double e = std::exp(x);
-                    a.data[i] = e / (1.0 + e);
-                }
+                a.data[i] = stable_sigmoid(z.data[i]);
             }
             break;
             
@@ -415,7 +435,7 @@ Matrix apply_activation(const Matrix& z, Activation act) {
         case Activation::Swish:
             for (std::size_t i = 0; i < z.size; ++i) {
                 const double x = z.data[i];
-                const double sigmoid_x = (x >= 0) ? 1.0 / (1.0 + std::exp(-x)) : std::exp(x) / (1.0 + std::exp(x));
+                const double sigmoid_x = stable_sigmoid(x);
                 a.data[i] = x * sigmoid_x;
             }
             break;
@@ -478,9 +498,7 @@ Matrix apply_activation_derivative(const Matrix& z, const Matrix& grad, Activati
         
         case Activation::Sigmoid:
             for (std::size_t i = 0; i < z.size; ++i) {
-                const double s = (z.data[i] >= 0) ?
-                    1.0 / (1.0 + std::exp(-z.data[i])) :
-                    std::exp(z.data[i]) / (1.0 + std::exp(z.data[i]));
+                const double s = stable_sigmoid(z.data[i]);
                 dZ.data[i] = grad.data[i] * s * (1.0 - s);
             }
             break;
@@ -541,7 +559,7 @@ Matrix apply_activation_derivative(const Matrix& z, const Matrix& grad, Activati
         case Activation::Swish: {
             for (std::size_t i = 0; i < z.size; ++i) {
                 const double x = z.data[i];
-                const double sigmoid_x = (x >= 0) ? 1.0 / (1.0 + std::exp(-x)) : std::exp(x) / (1.0 + std::exp(x));
+                const double sigmoid_x = stable_sigmoid(x);
                 const double swish_derivative = sigmoid_x + x * sigmoid_x * (1.0 - sigmoid_x);
                 dZ.data[i] = grad.data[i] * swish_derivative;
             }
@@ -560,10 +578,8 @@ Matrix apply_activation_derivative(const Matrix& z, const Matrix& grad, Activati
         
         case Activation::Softplus:
             for (std::size_t i = 0; i < z.size; ++i) {
-                dZ.data[i] = grad.data[i] * (1.0 - std::exp(-std::log(1.0 + std::exp(z.data[i]))));
-                // Simplified: grad * sigmoid(z)
-                dZ.data[i] = grad.data[i] * (1.0 - std::exp(-std::max(z.data[i], 0.0)) /
-                                            (1.0 + std::exp(-std::abs(z.data[i]))));
+                const double s = stable_sigmoid(z.data[i]);
+                dZ.data[i] = grad.data[i] * s;
             }
             break;
     }
@@ -595,6 +611,7 @@ LossResult compute_loss(const Matrix& y_true, const Matrix& y_pred, LossFunction
         
         case LossFunction::CrossEntropy: {
             Matrix softmax_pred = apply_activation(y_pred, Activation::Softmax);
+            clamp_matrix_probabilities(softmax_pred);
             double sum = 0.0;
             
             for (std::size_t r = 0; r < y_true.shape[0]; ++r) {
@@ -614,9 +631,7 @@ LossResult compute_loss(const Matrix& y_true, const Matrix& y_pred, LossFunction
         
         case LossFunction::BinaryCrossEntropy: {
             Matrix clipped_pred = y_pred;
-            for (auto& val : clipped_pred.data) {
-                val = std::max(std::min(val, 1.0 - 1e-15), 1e-15);
-            }
+            clamp_matrix_probabilities(clipped_pred);
             
             double sum = 0.0;
             for (std::size_t i = 0; i < y_true.size; ++i) {
@@ -694,13 +709,8 @@ LossResult compute_loss(const Matrix& y_true, const Matrix& y_pred, LossFunction
         case LossFunction::KLDivergence: {
             Matrix clipped_true = y_true;
             Matrix clipped_pred = y_pred;
-            
-            for (auto& val : clipped_true.data) {
-                val = std::max(val, 1e-15);
-            }
-            for (auto& val : clipped_pred.data) {
-                val = std::max(val, 1e-15);
-            }
+            clamp_matrix_probabilities(clipped_true);
+            clamp_matrix_probabilities(clipped_pred);
             
             double sum = 0.0;
             for (std::size_t i = 0; i < y_true.size; ++i) {

@@ -27,7 +27,7 @@ This document tracks the remaining gaps after the latest development cycle, high
 **Status**: Softplus overflow guard and softmax smoke tests landed; broader audit pending  
 **Location**: Softmax, cross-entropy, KL divergence, division-heavy ops  
 **Needs**:
-- Shared epsilon/clamp utilities for activations and losses
+- Extend shared epsilon/clamp utilities to all probabilistic operations and make epsilon configurable
 - Regression suite covering adversarial inputs
 - Documentation guidance on input scaling and expected value ranges
 
