@@ -32,6 +32,7 @@ set(SOURCES
     src/layers.cpp
     src/optimizers.cpp
     src/model_serializer.cpp
+    src/dnn_improved.cpp
 )
 
 # Static library
