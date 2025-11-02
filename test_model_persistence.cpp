@@ -107,6 +107,32 @@ int main() {
         assert(std::abs(conv_layer.bias_velocity.data[0] - expected_bias_grad) < 1e-9);
     }
 
+    // Numerical stability smoke checks
+    {
+        dnn::Matrix logits({1, 2});
+        logits(0, 0) = 1000.0;
+        logits(0, 1) = -1000.0;
+
+        dnn::Matrix softplus_out = dnn::apply_activation(logits, dnn::Activation::Softplus);
+        assert(std::isfinite(softplus_out(0, 0)));
+        assert(std::isfinite(softplus_out(0, 1)));
+
+        dnn::Matrix softmax_out = dnn::apply_activation(logits, dnn::Activation::Softmax);
+        for (double v : softmax_out.data) {
+            assert(std::isfinite(v));
+        }
+
+        dnn::Matrix target({1, 2});
+        target(0, 0) = 1.0;
+        target(0, 1) = 0.0;
+
+        dnn::LossResult loss = dnn::compute_loss(target, softmax_out, dnn::LossFunction::CrossEntropy);
+        assert(std::isfinite(loss.value));
+        for (double v : loss.gradient.data) {
+            assert(std::isfinite(v));
+        }
+    }
+
     std::cout << "All tests passed!" << std::endl;
     return 0;
 }

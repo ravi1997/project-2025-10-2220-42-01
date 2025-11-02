@@ -104,6 +104,10 @@ This document provides a comprehensive assessment of the current implementation 
 - ✅ Optimizer state management standardised across Dense, Conv2D, BatchNorm
 - ⚠️ Expanded numerical validation and edge-case testing still required
 
+### 4. Numerical Stability
+- ⚠️ Softplus overflow protections added; broader activation/loss audit in progress
+- ⚠️ Dedicated regression tests for pathological inputs planned
+
 ## Missing Components
 
 ### 1. Performance Features
