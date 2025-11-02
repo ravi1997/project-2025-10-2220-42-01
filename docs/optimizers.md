@@ -28,6 +28,74 @@ The base `Optimizer` class defines the common interface:
 ### SGD (Stochastic Gradient Descent)
 The `SGD` optimizer implements stochastic gradient descent with optional momentum.
 
+### Adam (Adaptive Moment Estimation)
+The `Adam` optimizer implements the Adam optimization algorithm with adaptive learning rates.
+
+### RMSprop (Root Mean Square Propagation)
+The `RMSprop` optimizer implements the RMSprop optimization algorithm that uses a moving average of squared gradients to normalize gradients.
+
+#### Constructor
+```cpp
+RMSprop(double lr = 0.001,
+        double a = 0.99,
+        double eps = 1e-8,
+        double wd = 0.0);
+```
+
+#### Parameters
+- `lr`: Learning rate (default: 0.001)
+- `a`: Smoothing constant (default: 0.99)
+- `eps`: Term added to improve numerical stability (default: 1e-8)
+- `wd`: Weight decay (L2 penalty, default: 0.0)
+
+#### Features
+- Adaptive learning rate based on recent gradient magnitudes
+- Moving average of squared gradients for normalization
+- Numerical stability improvements with epsilon term
+- Optional weight decay for regularization
+
+#### Usage Example
+```cpp
+// Basic RMSprop
+auto rmsprop_basic = std::make_unique<dnn::RMSprop>(0.001);
+
+// RMSprop with custom parameters
+auto rmsprop_custom = std::make_unique<dnn::RMSprop>(0.001, 0.9, 1e-6, 1e-4);
+```
+
+### AdamW (Adam with Weight Decay)
+The `AdamW` optimizer implements the AdamW optimization algorithm, which decouples weight decay from the gradient update to improve generalization.
+
+#### Constructor
+```cpp
+AdamW(double lr = 0.001,
+      double b1 = 0.9,
+      double b2 = 0.999,
+      double wd = 0.01);
+```
+
+#### Parameters
+- `lr`: Learning rate (default: 0.001)
+- `b1`: Exponential decay rate for first moment (default: 0.9)
+- `b2`: Exponential decay rate for second moment (default: 0.999)
+- `wd`: Weight decay coefficient (default: 0.01)
+
+#### Features
+- Decoupled weight decay from gradient updates
+- Adaptive learning rates for each parameter
+- Bias correction for early iterations
+- First and second moment estimation
+- Better generalization compared to standard Adam with L2 regularization
+
+#### Usage Example
+```cpp
+// Basic AdamW
+auto adamw_basic = std::make_unique<dnn::AdamW>(0.001);
+
+// AdamW with custom parameters
+auto adamw_custom = std::make_unique<dnn::AdamW>(0.001, 0.95, 0.999, 1e-4);
+```
+
 #### Constructor
 ```cpp
 SGD(double lr = 0.01, 

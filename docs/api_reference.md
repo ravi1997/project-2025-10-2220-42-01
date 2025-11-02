@@ -120,6 +120,41 @@ enum class OptimizerType {
 };
 ```
 
+#### RMSprop Optimizer
+```cpp
+struct RMSprop : public Optimizer {
+    double alpha;      // Smoothing constant
+    double epsilon;    // Term added to improve numerical stability
+    double weight_decay;  // Weight decay (L2 penalty)
+    
+    explicit RMSprop(double lr = 0.001,
+                     double a = 0.99,
+                     double eps = 1e-8,
+                     double wd = 0.0);
+    
+    void step() override;
+    void zero_grad() override;
+};
+```
+
+#### AdamW Optimizer
+```cpp
+struct AdamW : public Optimizer {
+    double beta1;        // Coefficient for computing running average of gradient
+    double beta2;        // Coefficient for computing running average of squared gradient
+    double weight_decay; // Weight decay coefficient
+    std::size_t step_count;  // Step counter for bias correction
+    
+    explicit AdamW(double lr = 0.001,
+                   double b1 = 0.9,
+                   double b2 = 0.999,
+                   double wd = 0.01);
+    
+    void step() override;
+    void zero_grad() override;
+};
+```
+
 ### LossResult Struct
 ```cpp
 struct LossResult {

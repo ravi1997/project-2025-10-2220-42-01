@@ -93,22 +93,27 @@ This document provides a comprehensive assessment of the current implementation 
 
 ## Partially Implemented Components
 
+### 1. Numerical Stability
+- ✅ Softplus overflow protections and shared probability clamp utilities in place
+- ⚠️ Broader activation/loss audit and negative-path testing still pending
+- ⚠️ Shared epsilon/clamping utilities to be introduced for consistency
+
+## Fully Implemented Components
+
 ### 1. Model Persistence
 - ✅ Save/Load methods implemented with binary format and integrity checks
 - ✅ Layer parameters, optimizer state, and config serialized/deserialized
-- ⚠️ Additional round-trip scenarios and error-path tests planned
+- ✅ Regression executable (`test_model_persistence`) validates round-trip behavior
 
 ### 2. Advanced Optimizers
 - ✅ RMSprop and AdamW fully integrated alongside SGD/Adam
+- ✅ Optimizer state serialization/deserialization implemented
+- ✅ Unified gradient clipping and regularization helpers across all trainable layers
 
 ### 3. Layer Features
 - ✅ Optimizer state management standardised across Dense, Conv2D, BatchNorm
+- ✅ Conv2D backward pass with cached activations and optimizer buffers
 - ⚠️ Expanded numerical validation and edge-case testing still required
-
-### 4. Numerical Stability
-- ⚠️ Softplus overflow protections and shared probability clamp utilities in place
-- ⚠️ Broader activation/loss audit and negative-path testing still pending
-- ⚠️ Shared epsilon/clamping utilities to be introduced for consistency
 
 ## Missing Components
 

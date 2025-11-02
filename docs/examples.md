@@ -239,9 +239,13 @@ config.max_epochs = 10;
 dnn::Model model(config);
 
 // Choose appropriate optimizer
-auto optimizer = std::make_unique<dnn::Adam>(0.001, 0.9, 0.99);
+auto optimizer = std::make_unique<dnn::Adam>(0.001, 0.9, 0.9);
 // Or for SGD with momentum
 // auto optimizer = std::make_unique<dnn::SGD>(0.01, 0.9);
+// Or for RMSprop
+// auto optimizer = std::make_unique<dnn::RMSprop>(0.001, 0.9, 1e-8);
+// Or for AdamW
+// auto optimizer = std::make_unique<dnn::AdamW>(0.001, 0.9, 0.99, 1e-4);
 ```
 
 ## Troubleshooting Common Issues

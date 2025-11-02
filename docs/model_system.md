@@ -86,7 +86,7 @@ The model behavior can be customized through the `Config` struct:
 void save(const std::string& filepath) const;
 void load(const std::string& filepath);
 ```
-Methods for saving and loading trained models (implementation in progress).
+Methods for saving and loading trained models with binary format and versioned headers.
 
 ## Model Analysis
 ```cpp

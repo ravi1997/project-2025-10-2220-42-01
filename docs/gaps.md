@@ -6,18 +6,18 @@ This document tracks the remaining gaps after the latest development cycle, high
 ## Recently Resolved Gaps
 
 ### Model Persistence
-- Binary `ModelSerializer` introduced; serialises configuration, layers, and optimizer state with versioned headers.
-- `test_model_persistence` validates round-trip behaviour and guards against regression.
+- ✅ Binary `ModelSerializer` introduced; serialises configuration, layers, and optimizer state with versioned headers.
+- ✅ `test_model_persistence` validates round-trip behaviour and guards against regression.
 - **Follow-up**: Add corrupt-file handling tests and cross-version compatibility checks.
 
 ### Conv2D Backward Pass
-- Reworked gradient propagation with cached geometry and optimiser buffers.
-- Gradient smoke test added to persistence harness to ensure functional updates.
+- ✅ Reworked gradient propagation with cached geometry and optimiser buffers.
+- ✅ Gradient smoke test added to persistence harness to ensure functional updates.
 - **Follow-up**: Full gradient-check suite and performance benchmarks.
 
 ### Optimizer Integration
-- Unified gradient clipping/regularisation helpers across layers.
-- RMSprop and AdamW now first-class, including persistence support.
+- ✅ Unified gradient clipping/regularisation helpers across layers.
+- ✅ RMSprop and AdamW now first-class, including persistence support.
 - **Follow-up**: Document learning-rate scheduler usage and add API conveniences.
 
 ## Critical Gaps
