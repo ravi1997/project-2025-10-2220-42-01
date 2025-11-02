@@ -1164,8 +1164,6 @@ using TensorI = Tensor<int>;
 using TensorL = Tensor<long>;
 using TensorB = Tensor<bool>;
 
-} // namespace dnn
-
 // Define trait names are in tensor.cpp
 
 #endif // TENSOR_HPP
