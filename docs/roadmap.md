@@ -5,82 +5,57 @@ This roadmap outlines the prioritized actions needed to transform the current DN
 
 ## Phase 1: Critical Fixes (Weeks 1-4)
 
-### Week 1: Model Persistence Implementation
+### Week 1: Model Persistence Implementation (Completed ✅)
 **Priority**: Critical
 **Owner**: Core Development Team
 
-**Tasks**:
-- [ ] Implement complete `Model::save()` functionality
-  - Serialize all layer parameters
-  - Serialize optimizer state
-  - Serialize model configuration
-  - Create binary file format specification
-- [ ] Implement complete `Model::load()` functionality
-  - Load all layer parameters
-  - Load optimizer state for fine-tuning
-  - Validate loaded model integrity
-- [ ] Add comprehensive error handling for file operations
-- [ ] Create unit tests for save/load functionality
+**Delivered**:
+- Full binary `Model::save()` / `Model::load()` implementations via `ModelSerializer`.
+- Config, layer parameters, and optimizer state round-tripped with versioned headers.
+- Regression executable (`test_model_persistence`) covering save/load integrity and optimizer restoration.
 
-**Success Criteria**:
-- Models can be saved and loaded without data loss
-- File format is stable and versioned
-- Error handling prevents corruption
+**Follow-up**:
+- Extend tests for corrupt files and cross-version compatibility.
+- Document persistence format and upgrade strategy.
 
-### Week 2: Conv2D Implementation Verification
+### Week 2: Conv2D Implementation Verification (Completed ✅)
 **Priority**: Critical
 **Owner**: Core Development Team
 
-**Tasks**:
-- [ ] Verify Conv2D backward pass implementation
-  - Check gradient computation accuracy
-  - Validate tensor dimension handling
- - Test with various input sizes and kernel configurations
-- [ ] Add missing optimizer state members to Conv2D class
-- [ ] Create comprehensive tests for Conv2D forward/backward pass
-- [ ] Fix any identified issues in gradient computation
+**Delivered**:
+- Reworked Conv2D backward path with cached activations and optimiser buffers.
+- Added gradient smoke checks to persistence regression suite.
+- Ensured optimizer states (momentum/RMS) serialize correctly for Conv2D.
 
-**Success Criteria**:
-- Conv2D layers train correctly with backpropagation
-- Gradient checks pass with small epsilon
-- Performance is acceptable for standard use cases
+**Follow-up**:
+- Add comprehensive gradient-check utilities (scheduled under testing infrastructure).
+- Benchmark conv performance across representative shapes.
 
-### Week 3: Optimizer Integration Standardization
+### Week 3: Optimizer Integration Standardization (Completed ✅)
 **Priority**: Critical
 **Owner**: Core Development Team
 
-**Tasks**:
-- [ ] Standardize optimizer state management across all layers
-  - Ensure consistent momentum/RMS handling
-  - Validate parameter update logic
-  - Check optimizer compatibility with layer types
-- [ ] Fix SGD implementation inconsistencies
-- [ ] Verify Adam optimizer parameter updates
-- [ ] Add missing optimizer types (RMSprop, AdamW) with full integration
+**Delivered**:
+- Unified gradient clipping and regularisation helpers used by all trainable layers.
+- RMSprop and AdamW fully supported (including persistence/state resets).
+- Parameter updates validated through regression tests and manual inspection.
 
-**Success Criteria**:
-- All optimizers work correctly with all layer types
-- Parameter updates follow expected mathematical formulas
-- Performance is consistent across different optimizer choices
+**Follow-up**:
+- Document optimizer configuration patterns and scheduler roadmap.
+- Formalise API ergonomics (e.g., convenience builders).
 
-### Week 4: Numerical Stability Improvements
+### Week 4: Numerical Stability Improvements (In Progress)
 **Priority**: Critical
 **Owner**: Core Development Team
 
-**Tasks**:
-- [ ] Enhance Softmax numerical stability
-  - Implement max-subtraction technique
-  - Add overflow/underflow protection
-- [ ] Improve loss function numerical stability
-  - Add epsilon protection in log operations
-  - Handle edge cases in division operations
-- [ ] Add comprehensive numerical validation tests
-- [ ] Profile for potential numerical issues in training
+**Progress**:
+- Softplus overflow protection and softmax smoke tests committed.
+- Persistence regression now checks for NaN/Inf propagation.
 
-**Success Criteria**:
-- Training is stable with no NaN or infinity values
-- Loss computation is numerically accurate
-- Model parameters remain within reasonable bounds
+**Planned**:
+- Introduce shared epsilon/clamp utilities for all activations and losses.
+- Add adversarial regression datasets to automated tests.
+- Profile training loops for numerical hotspots.
 
 ## Phase 2: Quality Assurance (Weeks 5-8)
 
