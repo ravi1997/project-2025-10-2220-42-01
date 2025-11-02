@@ -17,6 +17,7 @@ int main() {
         for(int j = 0; j < 3; ++j) {
             B(i, j) = i * 3 + j;  // Fill with values
         }
+    }
     
     std::cout << "Filled matrix B:" << std::endl;
     for(int i = 0; i < 2; ++i) {

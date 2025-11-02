@@ -568,6 +568,86 @@ LossResult compute_loss(const Matrix& y_true, const Matrix& y_pred, LossFunction
 
 // ---------------- Dense Layer Methods ----------------
 void Dense::update_parameters(const Optimizer& opt) {
+    // Apply gradient clipping if enabled
+    if (opt.use_gradient_clipping) {
+        if (opt.max_gradient_norm > 0.0) {
+            // Clip by norm
+            double norm = 0.0;
+            for (std::size_t i = 0; i < weight_velocity.size; ++i) {
+                norm += weight_velocity.data[i] * weight_velocity.data[i];
+            }
+            norm = std::sqrt(norm);
+            
+            if (norm > opt.max_gradient_norm) {
+                double clip_coeff = opt.max_gradient_norm / (norm + 1e-6);
+                for (std::size_t i = 0; i < weight_velocity.size; ++i) {
+                    weight_velocity.data[i] *= clip_coeff;
+                }
+            }
+            
+            // Clip bias gradients
+            double bias_norm = 0.0;
+            for (std::size_t i = 0; i < bias_velocity.size; ++i) {
+                bias_norm += bias_velocity.data[i] * bias_velocity.data[i];
+            }
+            bias_norm = std::sqrt(bias_norm);
+            
+            if (bias_norm > opt.max_gradient_norm) {
+                double clip_coeff = opt.max_gradient_norm / (bias_norm + 1e-6);
+                for (std::size_t i = 0; i < bias_velocity.size; ++i) {
+                    bias_velocity.data[i] *= clip_coeff;
+                }
+            }
+        } else if (opt.clip_value > 0.0) {
+            // Clip by value
+            for (std::size_t i = 0; i < weight_velocity.size; ++i) {
+                if (weight_velocity.data[i] > opt.clip_value) {
+                    weight_velocity.data[i] = opt.clip_value;
+                } else if (weight_velocity.data[i] < -opt.clip_value) {
+                    weight_velocity.data[i] = -opt.clip_value;
+                }
+            }
+            
+            // Clip bias gradients
+            for (std::size_t i = 0; i < bias_velocity.size; ++i) {
+                if (bias_velocity.data[i] > opt.clip_value) {
+                    bias_velocity.data[i] = opt.clip_value;
+                } else if (bias_velocity.data[i] < -opt.clip_value) {
+                    bias_velocity.data[i] = -opt.clip_value;
+                }
+            }
+        }
+    }
+    
+    // Apply regularization
+    if (opt.l1_lambda > 0.0) {
+        // L1 regularization (Lasso)
+        for (std::size_t i = 0; i < weights.size; ++i) {
+            double sign = (weights.data[i] > 0.0) ? 1.0 :
+                         (weights.data[i] < 0.0) ? -1.0 : 0.0;
+            weight_velocity.data[i] += sign * opt.l1_lambda;
+        }
+        
+        // L1 regularization for bias
+        for (std::size_t i = 0; i < bias.size; ++i) {
+            double sign = (bias.data[i] > 0.0) ? 1.0 :
+                         (bias.data[i] < 0.0) ? -1.0 : 0.0;
+            bias_velocity.data[i] += sign * opt.l1_lambda;
+        }
+    }
+    
+    if (opt.l2_lambda > 0.0) {
+        // L2 regularization (Ridge)
+        for (std::size_t i = 0; i < weights.size; ++i) {
+            weight_velocity.data[i] += weights.data[i] * opt.l2_lambda;
+        }
+        
+        // L2 regularization for bias
+        for (std::size_t i = 0; i < bias.size; ++i) {
+            bias_velocity.data[i] += bias.data[i] * opt.l2_lambda;
+        }
+    }
+    
     if (const auto* sgd = dynamic_cast<const SGD*>(&opt)) {
         // SGD update with momentum
         if (sgd->momentum > 0.0) {
@@ -595,18 +675,18 @@ void Dense::update_parameters(const Optimizer& opt) {
         const_cast<Adam*>(adam)->step_count++;
         
         // Update momentum
-        weight_momentum = add(scalar_mul(weight_momentum, adam->beta1), 
+        weight_momentum = add(scalar_mul(weight_momentum, adam->beta1),
                              scalar_mul(weight_velocity, 1.0 - adam->beta1));
-        bias_momentum = add(scalar_mul(bias_momentum, adam->beta1), 
+        bias_momentum = add(scalar_mul(bias_momentum, adam->beta1),
                            scalar_mul(bias_velocity, 1.0 - adam->beta1));
         
         // Update RMS
         Matrix weight_grad_sq = hadamard(weight_velocity, weight_velocity);
         Matrix bias_grad_sq = hadamard(bias_velocity, bias_velocity);
         
-        weight_rms = add(scalar_mul(weight_rms, adam->beta2), 
+        weight_rms = add(scalar_mul(weight_rms, adam->beta2),
                         scalar_mul(weight_grad_sq, 1.0 - adam->beta2));
-        bias_rms = add(scalar_mul(bias_rms, adam->beta2), 
+        bias_rms = add(scalar_mul(bias_rms, adam->beta2),
                       scalar_mul(bias_grad_sq, 1.0 - adam->beta2));
         
         // Bias correction
@@ -1130,6 +1210,38 @@ void BatchNorm::update_parameters(const Optimizer& opt) {
 }
 
 // ---------------- Optimizer Methods ----------------
+// Base Optimizer methods
+void Optimizer::enable_gradient_clipping(double max_norm) {
+    use_gradient_clipping = true;
+    max_gradient_norm = max_norm;
+}
+
+void Optimizer::enable_gradient_clipping_by_value(double clip_val) {
+    use_gradient_clipping = true;
+    clip_value = clip_val;
+}
+
+void Optimizer::disable_gradient_clipping() {
+    use_gradient_clipping = false;
+    max_gradient_norm = 0.0;
+    clip_value = 0.0;
+}
+
+void Optimizer::set_regularization(double l1_reg, double l2_reg) {
+    l1_lambda = l1_reg;
+    l2_lambda = l2_reg;
+}
+
+void Optimizer::set_lr_scheduler(std::unique_ptr<LRScheduler> scheduler) {
+    lr_scheduler = std::move(scheduler);
+}
+
+void Optimizer::update_learning_rate() {
+    if (lr_scheduler) {
+        lr_scheduler->step();
+    }
+}
+
 void SGD::step() {
     // This method is called after all gradients have been computed
     // Actual parameter updates are done in each layer's update_parameters method
@@ -1139,6 +1251,83 @@ void SGD::step() {
 void SGD::zero_grad() {
     // This method zeros the gradients in all layers
     // This would be called by the model before each forward pass
+}
+
+// ---------------- Learning Rate Scheduler Methods ----------------
+void StepLR::step() {
+    last_epoch++;
+    if (last_epoch % step_size == 0) {
+        optimizer.learning_rate = initial_lr * std::pow(gamma, static_cast<double>(last_epoch / step_size));
+    }
+}
+
+void ExponentialLR::step() {
+    last_epoch++;
+    optimizer.learning_rate = initial_lr * std::pow(gamma, static_cast<double>(last_epoch));
+}
+
+void PolynomialLR::step() {
+    last_epoch++;
+    double progress = static_cast<double>(last_epoch) / static_cast<double>(max_epochs);
+    progress = std::min(progress, 1.0);
+    
+    double lr = initial_lr + (end_lr - initial_lr) * std::pow(progress, power);
+    optimizer.learning_rate = lr;
+}
+
+void CosineAnnealingLR::step() {
+    last_epoch++;
+    double progress = static_cast<double>(last_epoch % t_max) / static_cast<double>(t_max);
+    
+    double lr = eta_min + (initial_lr - eta_min) * (1.0 + std::cos(progress * M_PI)) / 2.0;
+    optimizer.learning_rate = lr;
+}
+
+void ReduceLROnPlateau::step() {
+    // This scheduler requires a metric to be provided, so this is a placeholder
+    // In practice, this would be implemented to use an internal metric
+    last_epoch++;
+}
+
+void ReduceLROnPlateau::step(double metric) {
+    last_epoch++;
+    
+    bool is_better = false;
+    if (threshold_mode == 0) { // relative threshold
+        if (mode_min > 0) { // minimizing
+            is_better = metric < best * (1.0 - threshold);
+        } else { // maximizing
+            is_better = metric > best * (1.0 + threshold);
+        }
+    } else { // absolute threshold
+        if (mode_min > 0) { // minimizing
+            is_better = metric < best - threshold;
+        } else { // maximizing
+            is_better = metric > best + threshold;
+        }
+    }
+    
+    if (is_better) {
+        best = metric;
+        num_bad_epochs = 0;
+        in_cooldown = false;
+    } else {
+        num_bad_epochs++;
+        if (in_cooldown) {
+            cooldown--;
+            if (cooldown == 0) {
+                in_cooldown = false;
+            }
+        }
+        
+        if (num_bad_epochs > patience && !in_cooldown) {
+            double old_lr = optimizer.learning_rate;
+            optimizer.learning_rate = old_lr * factor;
+            cooldown = patience;
+            in_cooldown = true;
+            num_bad_epochs = 0;
+        }
+    }
 }
 
 void Adam::step() {

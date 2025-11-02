@@ -452,6 +452,10 @@ struct Conv2D : public Layer {
     Matrix weight_rms;
     Matrix bias_rms;
     
+    // Additional members for gradient clipping and regularization
+    Matrix grad_weights;   // Store gradients for optimizer update
+    Matrix grad_bias;      // Store bias gradients for optimizer update
+    
     Conv2D(std::size_t in_ch, std::size_t out_ch,
            std::size_t kh, std::size_t kw,
            std::size_t s_h = 1, std::size_t s_w = 1,
@@ -590,12 +594,126 @@ struct Optimizer {
     double learning_rate;
     double epsilon;
     
-    explicit Optimizer(OptimizerType opt_type, double lr = 0.001, double eps = 1e-8)
-        : type(opt_type), learning_rate(lr), epsilon(eps) {}
+    // Regularization parameters
+    double l1_lambda;
+    double l2_lambda;
+    
+    // Gradient clipping parameters
+    bool use_gradient_clipping;
+    double max_gradient_norm;
+    double clip_value;
+    
+    // Learning rate scheduler
+    std::unique_ptr<struct LRScheduler> lr_scheduler;
+    
+    explicit Optimizer(OptimizerType opt_type, double lr = 0.001, double eps = 1e-8,
+                      double l1_reg = 0.0, double l2_reg = 0.0)
+        : type(opt_type), learning_rate(lr), epsilon(eps),
+          l1_lambda(l1_reg), l2_lambda(l2_reg),
+          use_gradient_clipping(false), max_gradient_norm(0.0), clip_value(0.0) {}
     
     virtual ~Optimizer() = default;
     virtual void step() = 0;
     virtual void zero_grad() = 0;
+    
+    // Gradient clipping methods
+    void enable_gradient_clipping(double max_norm);
+    void enable_gradient_clipping_by_value(double clip_val);
+    void disable_gradient_clipping();
+    
+    // Regularization methods
+    void set_regularization(double l1_reg, double l2_reg);
+    
+    // Learning rate scheduler methods
+    void set_lr_scheduler(std::unique_ptr<LRScheduler> scheduler);
+    void update_learning_rate();
+};
+
+// ---------------- Learning Rate Scheduler Base Class ----------------
+struct LRScheduler {
+    Optimizer& optimizer;
+    double initial_lr;
+    std::size_t last_epoch;
+    
+    explicit LRScheduler(Optimizer& opt)
+        : optimizer(opt), initial_lr(opt.learning_rate), last_epoch(0) {}
+    
+    virtual ~LRScheduler() = default;
+    virtual void step() = 0;
+    virtual void step(double metric) = 0;  // For schedulers that depend on a metric
+};
+
+// ---------------- StepLR Scheduler ----------------
+struct StepLR : public LRScheduler {
+    std::size_t step_size;
+    double gamma;
+    
+    explicit StepLR(Optimizer& opt, std::size_t step_sz, double gamma_val = 0.1)
+        : LRScheduler(opt), step_size(step_sz), gamma(gamma_val) {}
+    
+    void step() override;
+    void step(double /*metric*/) override { step(); }  // Not used for StepLR
+};
+
+// ---------------- ExponentialLR Scheduler ----------------
+struct ExponentialLR : public LRScheduler {
+    double gamma;
+    
+    explicit ExponentialLR(Optimizer& opt, double gamma_val)
+        : LRScheduler(opt), gamma(gamma_val) {}
+    
+    void step() override;
+    void step(double /*metric*/) override { step(); }  // Not used for ExponentialLR
+};
+
+// ---------------- PolynomialLR Scheduler ----------------
+struct PolynomialLR : public LRScheduler {
+    std::size_t max_epochs;
+    double end_lr;
+    double power;
+    
+    explicit PolynomialLR(Optimizer& opt, std::size_t max_ep, double end_lr_val = 0.0001, double power_val = 1.0)
+        : LRScheduler(opt), max_epochs(max_ep), end_lr(end_lr_val), power(power_val) {}
+    
+    void step() override;
+    void step(double /*metric*/) override { step(); }  // Not used for PolynomialLR
+};
+
+// ---------------- CosineAnnealingLR Scheduler ----------------
+struct CosineAnnealingLR : public LRScheduler {
+    std::size_t t_max;
+    double eta_min;
+    
+    explicit CosineAnnealingLR(Optimizer& opt, std::size_t t_max_val, double eta_min_val = 0.0)
+        : LRScheduler(opt), t_max(t_max_val), eta_min(eta_min_val) {}
+    
+    void step() override;
+    void step(double /*metric*/) override { step(); }  // Not used for CosineAnnealingLR
+};
+
+// ---------------- ReduceLROnPlateau Scheduler ----------------
+struct ReduceLROnPlateau : public LRScheduler {
+    double mode_min;
+    double factor;
+    std::size_t patience;
+    double threshold;
+    std::size_t threshold_mode;
+    std::size_t cooldown;
+    std::size_t num_bad_epochs;
+    bool in_cooldown;
+    double best;
+    
+    explicit ReduceLROnPlateau(Optimizer& opt, double mode_min_val = 1.0, double factor_val = 0.1,
+                              std::size_t patience_val = 10, double threshold_val = 1e-4,
+                              std::size_t threshold_mode_val = 0, std::size_t cooldown_val = 0)
+        : LRScheduler(opt), mode_min(mode_min_val), factor(factor_val),
+          patience(patience_val), threshold(threshold_val),
+          threshold_mode(threshold_mode_val), cooldown(cooldown_val),
+          num_bad_epochs(0), in_cooldown(false),
+          best(mode_min_val > 0 ? std::numeric_limits<double>::max() : std::numeric_limits<double>::lowest()) {}
+    
+    void step() override;  // Uses internal metric
+    void step(double metric) override;  // Uses provided metric
 };
 
 // ---------------- SGD Optimizer ----------------
