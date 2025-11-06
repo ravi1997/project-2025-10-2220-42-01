@@ -24,16 +24,16 @@ int main() {
 
     // Create some dummy training data
     dnn::Matrix X({4, 2});
-    X.data[0] = 0.0; X.data[1] = 0.0;
-    X.data[2] = 0.0; X.data[3] = 1.0;
-    X.data[4] = 1.0; X.data[5] = 0.0;
-    X.data[6] = 1.0; X.data[7] = 1.0;
-    
+    X.data()[0] = 0.0; X.data()[1] = 0.0;
+    X.data()[2] = 0.0; X.data()[3] = 1.0;
+    X.data()[4] = 1.0; X.data()[5] = 0.0;
+    X.data()[6] = 1.0; X.data()[7] = 1.0;
+
     dnn::Matrix y({4, 1});
-    y.data[0] = 0.0;
-    y.data[1] = 1.0;
-    y.data[2] = 1.0;
-    y.data[3] = 0.0;
+    y.data()[0] = 0.0;
+    y.data()[1] = 1.0;
+    y.data()[2] = 1.0;
+    y.data()[3] = 0.0;
     
     // Train the model briefly to set some parameters
     std::mt19937 rng(42);
@@ -63,8 +63,8 @@ int main() {
     dnn::Matrix loaded_pred = loaded_model.predict(X);
     
     bool predictions_match = true;
-    for (size_t i = 0; i < original_pred.size; ++i) {
-        if (std::abs(original_pred.data[i] - loaded_pred.data[i]) > 1e-6) {
+    for (size_t i = 0; i < original_pred.size(); ++i) {
+        if (std::abs(original_pred.data()[i] - loaded_pred.data()[i]) > 1e-6) {
             predictions_match = false;
             break;
         }
@@ -97,14 +97,14 @@ int main() {
         dnn::Matrix conv_input({1, 4});
         conv_input.data = {1.0, 2.0, 3.0, 4.0};
         dnn::Matrix conv_output = conv_layer.forward(conv_input);
-        dnn::Matrix grad_out(conv_output.shape[0], conv_output.shape[1]);
-        std::fill(grad_out.data.begin(), grad_out.data.end(), 1.0);
+        dnn::Matrix grad_out(conv_output.shape()[0], conv_output.shape()[1]);
+        std::fill(grad_out.data(), grad_out.data() + grad_out.size(), 1.0);
         dnn::Matrix grad_in = conv_layer.backward(grad_out);
         (void)grad_in; // silence unused warning in case optimization removes it
-        double expected_weight_grad = std::accumulate(conv_input.data.begin(), conv_input.data.end(), 0.0);
-        double expected_bias_grad = static_cast<double>(grad_out.size);
-        assert(std::abs(conv_layer.weight_velocity.data[0] - expected_weight_grad) < 1e-9);
-        assert(std::abs(conv_layer.bias_velocity.data[0] - expected_bias_grad) < 1e-9);
+        double expected_weight_grad = std::accumulate(conv_input.data(), conv_input.data() + conv_input.size(), 0.0);
+        double expected_bias_grad = static_cast<double>(grad_out.size());
+        assert(std::abs(conv_layer.weight_velocity.data()[0] - expected_weight_grad) < 1e-9);
+        assert(std::abs(conv_layer.bias_velocity.data()[0] - expected_bias_grad) < 1e-9);
     }
 
     // Numerical stability smoke checks
@@ -118,7 +118,8 @@ int main() {
         assert(std::isfinite(softplus_out(0, 1)));
 
         dnn::Matrix softmax_out = dnn::apply_activation(logits, dnn::Activation::Softmax);
-        for (double v : softmax_out.data) {
+        for (size_t i = 0; i < softmax_out.size(); ++i) {
+            double v = softmax_out.data()[i];
             assert(std::isfinite(v));
         }
 
@@ -128,7 +129,8 @@ int main() {
 
         dnn::LossResult loss = dnn::compute_loss(target, softmax_out, dnn::LossFunction::CrossEntropy);
         assert(std::isfinite(loss.value));
-        for (double v : loss.gradient.data) {
+        for (size_t i = 0; i < loss.gradient.size(); ++i) {
+            double v = loss.gradient.data()[i];
             assert(std::isfinite(v));
         }
 
@@ -138,7 +140,8 @@ int main() {
         bce_true(0, 0) = 0.0;
         auto bce_loss = dnn::compute_loss(bce_true, bce_pred, dnn::LossFunction::BinaryCrossEntropy);
         assert(std::isfinite(bce_loss.value));
-        for (double v : bce_loss.gradient.data) {
+        for (size_t i = 0; i < bce_loss.gradient.size(); ++i) {
+            double v = bce_loss.gradient.data()[i];
             assert(std::isfinite(v));
         }
 
@@ -148,7 +151,8 @@ int main() {
         kl_q(0, 0) = 0.0; kl_q(0, 1) = 1.0;
         auto kl_loss = dnn::compute_loss(kl_p, kl_q, dnn::LossFunction::KLDivergence);
         assert(std::isfinite(kl_loss.value));
-        for (double v : kl_loss.gradient.data) {
+        for (size_t i = 0; i < kl_loss.gradient.size(); ++i) {
+            double v = kl_loss.gradient.data()[i];
             assert(std::isfinite(v));
         }
     }

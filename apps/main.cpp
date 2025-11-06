@@ -43,8 +43,8 @@ static Args parse_args(int argc, char** argv){
 
 static void demo_xor(std::mt19937& rng){
     std::cout << "\n=== XOR demo (2 -> 8 -> 1, sigmoid, MSE) ===\n";
-    Matrix X({4,2}); X.data[0]=0; X.data[1]=0; X.data[2]=0; X.data[3]=1; X.data[4]=1; X.data[5]=0; X.data[6]=1; X.data[7]=1;
-    Matrix y({4,1}); y.data[0]=0; y.data[1]=1; y.data[2]=1; y.data[3]=0;
+    Matrix X({4,2}); X.data()[0]=0; X.data()[1]=0; X.data()[2]=0; X.data()[3]=1; X.data()[4]=1; X.data()[5]=0; X.data()[6]=1; X.data()[7]=1;
+    Matrix y({4,1}); y.data()[0]=0; y.data()[1]=1; y.data()[2]=1; y.data()[3]=0;
 
     // Create model using the correct API
     Config config;
@@ -64,7 +64,7 @@ static void demo_xor(std::mt19937& rng){
     // Make predictions
     Matrix ypred = net.predict(X);
     for (std::size_t i=0;i<4;++i)
-        std::cout << int(X.data[i*X.shape[1]]) << " xor " << int(X.data[i*X.shape[1]+1]) << " -> " << ypred.data[i*ypred.shape[1]] << "\n";
+        std::cout << int(X.data()[i*X.shape()[1]]) << " xor " << int(X.data()[i*X.shape()[1]+1]) << " -> " << ypred.data()[i*ypred.shape()[1]] << "\n";
 }
 
 static void demo_3class(std::mt19937& rng){
@@ -77,7 +77,7 @@ static void demo_3class(std::mt19937& rng){
     auto put = [&](int cls, double cx, double cy){
         for (int i=0;i<per_class;++i){
             std::size_t r=labels.size();
-            X.data[r*X.shape[1]]=cx+N(rng); X.data[r*X.shape[1]+1]=cy+N(rng);
+            X.data()[r*X.shape()[1]]=cx+N(rng); X.data()[r*X.shape()[1]+1]=cy+N(rng);
             labels.push_back(cls);
         }
     };

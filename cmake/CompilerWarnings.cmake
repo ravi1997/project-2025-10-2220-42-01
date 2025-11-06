@@ -45,7 +45,6 @@ function(set_project_warnings target_name)
       -Wshadow
       -Wnon-virtual-dtor
       -Wold-style-cast
-      -Wheader-hygiene
       -Wsuggest-override
   )
 

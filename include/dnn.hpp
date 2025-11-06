@@ -187,10 +187,10 @@ struct Dense : public Layer {
         }
         std::uniform_real_distribution<double> dist(-limit, limit);
         
-        for (auto& w : weights.data) {
+        for (auto& w : weights.data()) {
             w = dist(gen);
         }
-        std::fill(bias.data.begin(), bias.data.end(), 0.0);
+        std::fill(bias.data(), bias.data() + bias.size(), 0.0);
     }
     
     Matrix forward(const Matrix& input) override {
@@ -232,7 +232,7 @@ struct Dense : public Layer {
     Matrix apply_activation_derivative(const Matrix& a, const Matrix& grad, Activation act);
     
     std::size_t get_parameter_count() const override {
-        return weights.data.size() + bias.data.size();
+        return weights.size() + bias.size();
     }
 };
 
@@ -301,17 +301,17 @@ struct Conv2D : public Layer {
         }
         std::normal_distribution<double> dist(0.0, stddev);
         
-        for (auto& w : weights.data) {
+        for (auto& w : weights.data()) {
             w = dist(gen);
         }
-        std::fill(bias.data.begin(), bias.data.end(), 0.0);
+        std::fill(bias.data(), bias.data() + bias.size(), 0.0);
     }
     
     Matrix forward(const Matrix& input) override;
     Matrix backward(const Matrix& grad_output) override;
     void update_parameters(const struct Optimizer& opt) override;
     std::size_t get_parameter_count() const override {
-        return weights.data.size() + bias.data.size();
+        return weights.size() + bias.size();
     }
 };
 
@@ -385,17 +385,17 @@ struct BatchNorm : public Layer {
           gamma(std::array<std::size_t, 2>{1, feat}), beta(std::array<std::size_t, 2>{1, feat}),
           running_mean(std::array<std::size_t, 2>{1, feat}), running_var(std::array<std::size_t, 2>{1, feat}) {
         
-        std::fill(gamma.data.begin(), gamma.data.end(), 1.0);
-        std::fill(beta.data.begin(), beta.data.end(), 0.0);
-        std::fill(running_mean.data.begin(), running_mean.data.end(), 0.0);
-        std::fill(running_var.data.begin(), running_var.data.end(), 1.0);
+        std::fill(gamma.data(), gamma.data() + gamma.size(), 1.0);
+        std::fill(beta.data(), beta.data() + beta.size(), 0.0);
+        std::fill(running_mean.data(), running_mean.data() + running_mean.size(), 0.0);
+        std::fill(running_var.data(), running_var.data() + running_var.size(), 1.0);
     }
     
     Matrix forward(const Matrix& input) override;
     Matrix backward(const Matrix& grad_output) override;
     void update_parameters(const struct Optimizer& opt) override;
     std::size_t get_parameter_count() const override {
-        return gamma.data.size() + beta.data.size();
+        return gamma.size() + beta.size();
     }
 };
 

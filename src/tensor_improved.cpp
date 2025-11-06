@@ -199,6 +199,7 @@ bool NumericalStability<bool>::clamp(bool value, bool min_val, bool max_val) {
     return value;
 }
 
+
 template<>
 float NumericalStability<float>::stable_sigmoid(float x) {
     if (x >= 0.0f) {

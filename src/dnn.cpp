@@ -51,8 +51,8 @@ static inline double clamp_probability(double x) noexcept {
 }
 
 static inline void clamp_matrix_probabilities(Matrix& m) {
-    for (double& v : m.data) {
-        v = clamp_probability(v);
+    for (std::size_t i = 0; i < m.size(); ++i) {
+        m.data()[i] = clamp_probability(m.data()[i]);
     }
 }
 
@@ -95,19 +95,21 @@ static void clip_gradient(Matrix& grad, const Optimizer& opt) {
     }
     if (opt.max_gradient_norm > 0.0) {
         double norm_sq = 0.0;
-        for (double value : grad.data) {
+        for (std::size_t i = 0; i < grad.size(); ++i) {
+            double value = grad.data()[i];
             norm_sq += value * value;
         }
         double norm = std::sqrt(norm_sq);
         if (norm > opt.max_gradient_norm && norm > 0.0) {
             double scale = opt.max_gradient_norm / (norm + 1e-12);
-            for (double& value : grad.data) {
-                value *= scale;
+            for (std::size_t i = 0; i < grad.size(); ++i) {
+                grad.data()[i] *= scale;
             }
         }
     } else if (opt.clip_value > 0.0) {
         const double clip = opt.clip_value;
-        for (double& value : grad.data) {
+        for (std::size_t i = 0; i < grad.size(); ++i) {
+            double& value = grad.data()[i];
             if (value > clip) value = clip;
             else if (value < -clip) value = -clip;
         }
@@ -116,14 +118,14 @@ static void clip_gradient(Matrix& grad, const Optimizer& opt) {
 
 static void add_regularization(Matrix& grad, const Matrix& param, const Optimizer& opt) {
     if (opt.l1_lambda > 0.0) {
-        for (std::size_t i = 0; i < grad.size; ++i) {
-            const double w = param.data[i];
-            grad.data[i] += (w > 0.0 ? 1.0 : (w < 0.0 ? -1.0 : 0.0)) * opt.l1_lambda;
+        for (std::size_t i = 0; i < grad.size(); ++i) {
+            const double w = param.data()[i];
+            grad.data()[i] += (w > 0.0 ? 1.0 : (w < 0.0 ? -1.0 : 0.0)) * opt.l1_lambda;
         }
     }
     if (opt.l2_lambda > 0.0) {
-        for (std::size_t i = 0; i < grad.size; ++i) {
-            grad.data[i] += param.data[i] * opt.l2_lambda;
+        for (std::size_t i = 0; i < grad.size(); ++i) {
+            grad.data()[i] += param.data()[i] * opt.l2_lambda;
         }
     }
 }
@@ -131,20 +133,20 @@ static void add_regularization(Matrix& grad, const Matrix& param, const Optimize
 static void sgd_update(const SGD& sgd, const Optimizer& opt, Matrix& param,
                        Matrix& grad, Matrix& momentum) {
     if (sgd.weight_decay > 0.0) {
-        for (std::size_t i = 0; i < grad.size; ++i) {
-            grad.data[i] += sgd.weight_decay * param.data[i];
+        for (std::size_t i = 0; i < grad.size(); ++i) {
+            grad.data()[i] += sgd.weight_decay * param.data()[i];
         }
     }
     if (sgd.momentum > 0.0) {
         for (std::size_t i = 0; i < momentum.size; ++i) {
-            double v = sgd.momentum * momentum.data[i] + (1.0 - sgd.dampening) * grad.data[i];
-            double update = sgd.nesterov ? (grad.data[i] + sgd.momentum * v) : v;
-            param.data[i] -= opt.learning_rate * update;
-            momentum.data[i] = v;
+            double v = sgd.momentum * momentum.data()[i] + (1.0 - sgd.dampening) * grad.data()[i];
+            double update = sgd.nesterov ? (grad.data()[i] + sgd.momentum * v) : v;
+            param.data()[i] -= opt.learning_rate * update;
+            momentum.data()[i] = v;
         }
     } else {
         for (std::size_t i = 0; i < param.size; ++i) {
-            param.data[i] -= opt.learning_rate * grad.data[i];
+            param.data()[i] -= opt.learning_rate * grad.data()[i];
         }
     }
 }
@@ -153,11 +155,11 @@ static void rmsprop_update(const RMSprop& rms, const Optimizer& opt,
                            Matrix& param, Matrix& grad, Matrix& rms_buffer) {
     for (std::size_t i = 0; i < rms_buffer.size; ++i) {
         if (rms.weight_decay > 0.0) {
-            grad.data[i] += rms.weight_decay * param.data[i];
+            grad.data()[i] += rms.weight_decay * param.data()[i];
         }
-        rms_buffer.data[i] = rms.alpha * rms_buffer.data[i] + (1.0 - rms.alpha) * grad.data[i] * grad.data[i];
-        param.data[i] -= opt.learning_rate * grad.data[i] /
-                         (std::sqrt(rms_buffer.data[i]) + rms.epsilon);
+        rms_buffer.data()[i] = rms.alpha * rms_buffer.data()[i] + (1.0 - rms.alpha) * grad.data()[i] * grad.data()[i];
+        param.data()[i] -= opt.learning_rate * grad.data()[i] /
+                         (std::sqrt(rms_buffer.data()[i]) + rms.epsilon);
     }
 }
 
@@ -166,16 +168,16 @@ static void adam_update(const Adam& adam, const Optimizer& opt,
                         Matrix& momentum, Matrix& rms_buffer) {
     if (adam.weight_decay > 0.0) {
         for (std::size_t i = 0; i < grad.size; ++i) {
-            grad.data[i] += adam.weight_decay * param.data[i];
+            grad.data()[i] += adam.weight_decay * param.data()[i];
         }
     }
-    for (std::size_t i = 0; i < momentum.size; ++i) {
-        momentum.data[i] = adam.beta1 * momentum.data[i] + (1.0 - adam.beta1) * grad.data[i];
-        rms_buffer.data[i] = adam.beta2 * rms_buffer.data[i] +
-                             (1.0 - adam.beta2) * grad.data[i] * grad.data[i];
-        double m_hat = momentum.data[i] / (1.0 - std::pow(adam.beta1, static_cast<double>(adam.step_count)) + 1e-12);
-        double v_hat = rms_buffer.data[i] / (1.0 - std::pow(adam.beta2, static_cast<double>(adam.step_count)) + 1e-12);
-        param.data[i] -= opt.learning_rate * m_hat / (std::sqrt(v_hat) + opt.epsilon);
+    for (std::size_t i = 0; i < momentum.size(); ++i) {
+        momentum.data()[i] = adam.beta1 * momentum.data()[i] + (1.0 - adam.beta1) * grad.data()[i];
+        rms_buffer.data()[i] = adam.beta2 * rms_buffer.data()[i] +
+                             (1.0 - adam.beta2) * grad.data()[i] * grad.data()[i];
+        double m_hat = momentum.data()[i] / (1.0 - std::pow(adam.beta1, static_cast<double>(adam.step_count)) + 1e-12);
+        double v_hat = rms_buffer.data()[i] / (1.0 - std::pow(adam.beta2, static_cast<double>(adam.step_count)) + 1e-12);
+        param.data()[i] -= opt.learning_rate * m_hat / (std::sqrt(v_hat) + opt.epsilon);
     }
 }
 
@@ -183,15 +185,15 @@ static void adamw_update(const AdamW& adamw, const Optimizer& opt,
                          Matrix& param, Matrix& grad,
                          Matrix& momentum, Matrix& rms_buffer) {
     for (std::size_t i = 0; i < momentum.size; ++i) {
-        momentum.data[i] = adamw.beta1 * momentum.data[i] + (1.0 - adamw.beta1) * grad.data[i];
-        rms_buffer.data[i] = adamw.beta2 * rms_buffer.data[i] +
-                             (1.0 - adamw.beta2) * grad.data[i] * grad.data[i];
-        double m_hat = momentum.data[i] / (1.0 - std::pow(adamw.beta1, static_cast<double>(adamw.step_count)) + 1e-12);
-        double v_hat = rms_buffer.data[i] / (1.0 - std::pow(adamw.beta2, static_cast<double>(adamw.step_count)) + 1e-12);
+        momentum.data()[i] = adamw.beta1 * momentum.data()[i] + (1.0 - adamw.beta1) * grad.data()[i];
+        rms_buffer.data()[i] = adamw.beta2 * rms_buffer.data()[i] +
+                             (1.0 - adamw.beta2) * grad.data()[i] * grad.data()[i];
+        double m_hat = momentum.data()[i] / (1.0 - std::pow(adamw.beta1, static_cast<double>(adamw.step_count)) + 1e-12);
+        double v_hat = rms_buffer.data()[i] / (1.0 - std::pow(adamw.beta2, static_cast<double>(adamw.step_count)) + 1e-12);
         double update = opt.learning_rate * m_hat / (std::sqrt(v_hat) + opt.epsilon);
-        param.data[i] -= update;
+        param.data()[i] -= update;
         if (adamw.weight_decay > 0.0) {
-            param.data[i] -= opt.learning_rate * adamw.weight_decay * param.data[i];
+            param.data()[i] -= opt.learning_rate * adamw.weight_decay * param.data()[i];
         }
     }
 }
@@ -904,12 +906,12 @@ Matrix Dropout::forward(const Matrix& input) {
     std::mt19937 gen(rd());
     std::bernoulli_distribution dist(1.0 - rate);
     
-    mask_cache.resize(input.size);
+    mask_cache.resize(input.size());
     Matrix output(input.shape[0], input.shape[1]);
     
-    for (std::size_t i = 0; i < input.size; ++i) {
+    for (std::size_t i = 0; i < input.size(); ++i) {
         mask_cache[i] = dist(gen);
-        output.data[i] = input.data[i] * (mask_cache[i] ? 1.0 : 0.0) / (1.0 - rate);
+        output.data()[i] = input.data()[i] * (mask_cache[i] ? 1.0 : 0.0) / (1.0 - rate);
     }
     
     return output;
@@ -922,8 +924,8 @@ Matrix Dropout::backward(const Matrix& grad_output) {
     
     Matrix grad_input(grad_output.shape[0], grad_output.shape[1]);
     
-    for (std::size_t i = 0; i < grad_output.size; ++i) {
-        grad_input.data[i] = grad_output.data[i] * (mask_cache[i] ? 1.0 : 0.0) / (1.0 - rate);
+    for (std::size_t i = 0; i < grad_output.size(); ++i) {
+        grad_input.data()[i] = grad_output.data()[i] * (mask_cache[i] ? 1.0 : 0.0) / (1.0 - rate);
     }
     
     return grad_input;
@@ -1377,11 +1379,11 @@ std::size_t Model::get_parameter_count() const {
     std::size_t total = 0;
     for (const auto& layer : layers) {
         if (auto dense = dynamic_cast<const Dense*>(layer.get())) {
-            total += dense->weights.data.size() + dense->bias.data.size();
+            total += dense->weights.size() + dense->bias.size();
         } else if (auto conv = dynamic_cast<const Conv2D*>(layer.get())) {
-            total += conv->weights.data.size() + conv->bias.data.size();
+            total += conv->weights.size() + conv->bias.size();
         } else if (auto batch = dynamic_cast<const BatchNorm*>(layer.get())) {
-            total += batch->gamma.data.size() + batch->beta.data.size();
+            total += batch->gamma.size() + batch->beta.size();
         } else {
             total += layer->get_parameter_count();
         }
@@ -1410,13 +1412,13 @@ std::size_t Model::parameter_count(std::size_t index) const {
     }
     const auto& layer = layers[index];
     if (auto dense = dynamic_cast<const Dense*>(layer.get())) {
-        return dense->weights.data.size() + dense->bias.data.size();
+        return dense->weights.size() + dense->bias.size();
     }
     if (auto conv = dynamic_cast<const Conv2D*>(layer.get())) {
-        return conv->weights.data.size() + conv->bias.data.size();
+        return conv->weights.size() + conv->bias.size();
     }
     if (auto batch = dynamic_cast<const BatchNorm*>(layer.get())) {
-        return batch->gamma.data.size() + batch->beta.data.size();
+        return batch->gamma.size() + batch->beta.size();
     }
     return layer->get_parameter_count();
 }

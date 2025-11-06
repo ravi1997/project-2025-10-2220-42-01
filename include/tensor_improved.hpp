@@ -14,6 +14,73 @@
 #include <limits>
 #include <type_traits>
 
+// Exception classes for error handling
+class TensorException : public std::runtime_error {
+public:
+    explicit TensorException(const std::string& msg) : std::runtime_error("Tensor Exception: " + msg) {}
+};
+
+class DimensionMismatchException : public TensorException {
+public:
+    explicit DimensionMismatchException(const std::string& msg) : TensorException("Dimension Mismatch: " + msg) {}
+};
+
+class IndexOutOfBoundsException : public TensorException {
+public:
+    explicit IndexOutOfBoundsException(const std::string& msg) : TensorException("Index Out of Bounds: " + msg) {}
+};
+
+class MemoryAllocationException : public TensorException {
+public:
+    explicit MemoryAllocationException(const std::string& msg) : TensorException("Memory Allocation Failed: " + msg) {}
+};
+
+class InvalidOperation : public TensorException {
+public:
+    explicit InvalidOperation(const std::string& msg) : TensorException("Invalid Operation: " + msg) {}
+};
+
+class NumericalStabilityException : public TensorException {
+public:
+    explicit NumericalStabilityException(const std::string& msg) : TensorException("Numerical Stability Error: " + msg) {}
+};
+
+// Memory layout options
+enum class MemoryLayout {
+    ROW_MAJOR,
+    COLUMN_MAJOR
+};
+
+// Helper function for broadcasting
+inline std::vector<size_t> compute_broadcast_shape(const std::vector<size_t>& shape1, const std::vector<size_t>& shape2) {
+    size_t ndim1 = shape1.size();
+    size_t ndim2 = shape2.size();
+    size_t result_ndim = std::max(ndim1, ndim2);
+    
+    std::vector<size_t> result_shape(result_ndim);
+    
+    for (size_t i = 0; i < result_ndim; ++i) {
+        size_t dim1_idx = (ndim1 > i) ? ndim1 - 1 - i : 0;
+        size_t dim2_idx = (ndim2 > i) ? ndim2 - 1 - i : 0;
+        
+        size_t size1 = (ndim1 > i) ? shape1[dim1_idx] : 1;
+        size_t size2 = (ndim2 > i) ? shape2[dim2_idx] : 1;
+        
+        if (size1 == 1) {
+            result_shape[result_ndim - 1 - i] = size2;
+        } else if (size2 == 1) {
+            result_shape[result_ndim - 1 - i] = size1;
+        } else if (size1 == size2) {
+            result_shape[result_ndim - 1 - i] = size1;
+        } else {
+            throw DimensionMismatchException("Shapes " + std::to_string(size1) + " and " +
+                                          std::to_string(size2) + " are not broadcastable");
+        }
+    }
+    
+    return result_shape;
+}
+
 namespace dnn {
 
 // Exception classes for error handling
@@ -243,6 +310,53 @@ public:
             return true; // For integer types, all values are valid
         }
     }
+    
+    // Stable sigmoid calculation
+    static T stable_sigmoid(T x) {
+        if constexpr (std::is_floating_point_v<T>) {
+            if (x >= T(0)) {
+                const T e = std::exp(-x);
+                return T(1) / (T(1) + e);
+            }
+            const T e = std::exp(x);
+            return e / (T(1) + e);
+        } else {
+            // For integer types, sigmoid doesn't make sense, return the value
+            return x;
+        }
+    }
+    
+    // Stable softplus calculation
+    static T stable_softplus(T x) {
+        if constexpr (std::is_floating_point_v<T>) {
+            if (x > T(0)) {
+                return x + std::log1p(std::exp(-x));
+            }
+            return std::log1p(std::exp(x));
+        } else {
+            // For integer types, softplus doesn't make sense, return the value
+            return x;
+        }
+    }
+    
+    // Safe logarithm calculation
+    static T safe_log(T x) {
+        if constexpr (std::is_floating_point_v<T>) {
+            const T epsilon = NumericalLimits<T>::epsilon();
+            if (x < epsilon) {
+                return std::log(epsilon);
+            }
+            return std::log(x);
+        } else if constexpr (std::is_integral_v<T>) {
+            if (x <= T(0)) {
+                return T(0); // Return 0 for invalid input
+            }
+            return static_cast<T>(std::log(static_cast<double>(x)));
+        } else {
+            // For boolean type, logarithm doesn't make sense
+            return T(0);
+        }
+    }
 };
 
 template<typename T>
@@ -303,16 +417,42 @@ public:
     Tensor() : size_(0), layout_(MemoryLayout::ROW_MAJOR) {}
 
     // Constructor with shape
-    explicit Tensor(const std::vector<size_t>& shape, MemoryLayout layout = MemoryLayout::ROW_MAJOR) 
+    explicit Tensor(const std::vector<size_t>& shape, MemoryLayout layout = MemoryLayout::ROW_MAJOR)
         : shape_(shape), layout_(layout) {
         size_ = calculate_size();
         data_ = std::make_shared<TensorData<T>>(size_);
         calculate_strides();
     }
 
+    // Constructor with std::array shape
+    template<size_t N>
+    explicit Tensor(const std::array<size_t, N>& shape_array, MemoryLayout layout = MemoryLayout::ROW_MAJOR)
+        : layout_(layout) {
+        shape_.resize(N);
+        for (size_t i = 0; i < N; ++i) {
+            shape_[i] = shape_array[i];
+        }
+        size_ = calculate_size();
+        data_ = std::make_shared<TensorData<T>>(size_);
+        calculate_strides();
+    }
+
     // Constructor with shape and initial value
-    Tensor(const std::vector<size_t>& shape, const T& initial_value, MemoryLayout layout = MemoryLayout::ROW_MAJOR) 
+    Tensor(const std::vector<size_t>& shape, const T& initial_value, MemoryLayout layout = MemoryLayout::ROW_MAJOR)
         : shape_(shape), layout_(layout) {
+        size_ = calculate_size();
+        data_ = std::make_shared<TensorData<T>>(size_, initial_value);
+        calculate_strides();
+    }
+
+    // Constructor with std::array shape and initial value
+    template<size_t N>
+    Tensor(const std::array<size_t, N>& shape_array, const T& initial_value, MemoryLayout layout = MemoryLayout::ROW_MAJOR)
+        : layout_(layout) {
+        shape_.resize(N);
+        for (size_t i = 0; i < N; ++i) {
+            shape_[i] = shape_array[i];
+        }
         size_ = calculate_size();
         data_ = std::make_shared<TensorData<T>>(size_, initial_value);
         calculate_strides();
@@ -434,9 +574,14 @@ public:
     MemoryLayout layout() const { return layout_; }
     
     // Data access
-    T* data() { 
+    T* data() {
         data_->ensure_unique(); // Ensure unique ownership before returning mutable pointer
-        return data_->get(); 
+        return data_->get();
+    }
+    
+    T* mutable_data() {
+        data_->ensure_unique(); // Ensure unique ownership before returning mutable pointer
+        return data_->get();
     }
     
     const T* data() const { return data_->get(); }
@@ -1343,7 +1488,25 @@ public:
                     }
                     
                     // Apply softmax to the temporary slice
-                    NumericalStability<T>::softmax_inplace(temp_slice.data(), axis_size);
+                    if constexpr (std::is_same_v<T, bool>) {
+                        // For bool type, we need to handle differently since vector<bool> doesn't have .data()
+                        std::vector<bool> temp_bool_slice(axis_size);
+                        for (size_t ax = 0; ax < axis_size; ++ax) {
+                            temp_bool_slice[ax] = temp_slice[ax];
+                        }
+                        // Convert to a vector of integers for processing
+                        std::vector<int> int_slice(axis_size);
+                        for (size_t ax = 0; ax < axis_size; ++ax) {
+                            int_slice[ax] = static_cast<int>(temp_bool_slice[ax]);
+                        }
+                        NumericalStability<int>::softmax_inplace(int_slice.data(), axis_size);
+                        // Convert back to bool
+                        for (size_t ax = 0; ax < axis_size; ++ax) {
+                            temp_slice[ax] = static_cast<T>(int_slice[ax] > 0.5);
+                        }
+                    } else {
+                        NumericalStability<T>::softmax_inplace(temp_slice.data(), axis_size);
+                    }
                     
                     // Copy back to the result
                     for (size_t ax = 0; ax < axis_size; ++ax) {

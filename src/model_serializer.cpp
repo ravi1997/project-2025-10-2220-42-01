@@ -34,8 +34,8 @@ void ModelSerializer::read_string(std::ifstream& file, std::string& str) {
 
 void ModelSerializer::write_matrix(std::ofstream& file, const Matrix& matrix) {
     write_value(file, matrix.shape[0]);
-    write_value(file, matrix.shape[1]);
-    write_vector(file, matrix.data);
+    write_value(file, matrix.shape()[1]);
+    write_vector(file, std::vector<double>(matrix.data(), matrix.data() + matrix.size()));
 }
 
 void ModelSerializer::read_matrix(std::ifstream& file, Matrix& matrix) {
@@ -45,12 +45,18 @@ void ModelSerializer::read_matrix(std::ifstream& file, Matrix& matrix) {
     if (matrix.shape[0] != rows || matrix.shape[1] != cols) {
         matrix = Matrix(rows, cols);
     }
-    read_vector(file, matrix.data);
+    std::vector<double> temp_data;
+    read_vector(file, temp_data);
+    matrix = dnn::Matrix(matrix.shape()); // Reconstruct with proper shape
+    for (size_t i = 0; i < temp_data.size() && i < matrix.size(); ++i) {
+        matrix.data()[i] = temp_data[i];
+    }
     sync_matrix_metadata(matrix);
 }
 
 void ModelSerializer::sync_matrix_metadata(Matrix& matrix) {
-    matrix.size = matrix.data.size();
+    // Note: We don't need to set size as it's calculated from shape in the Tensor class
+    // The Matrix (Tensor) automatically manages its size based on shape
 }
 
 void ModelSerializer::save_optimizer(std::ofstream& file, const Optimizer* optimizer) {

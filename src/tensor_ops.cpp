@@ -12,7 +12,6 @@ namespace dnn {
 // ---------------- Tensor Operations Implementation ----------------
 
 // Compute broadcast shape for two tensors
-template<typename T>
 std::vector<size_t> compute_broadcast_shape(const std::vector<size_t>& shape1, const std::vector<size_t>& shape2) {
     size_t ndim1 = shape1.size();
     size_t ndim2 = shape2.size();
@@ -50,10 +49,10 @@ Tensor<T> transpose(const Tensor<T>& A) {
     }
     
     std::vector<size_t> transposed_shape = {A.shape()[1], A.shape()[0]};
-    Tensor<T> T(transposed_shape, A.layout());
+    Tensor<T> result(transposed_shape, A.layout());
     
     // Use parallel execution for larger tensors
-    if (A.size() >= 1000) {
+    if (A.size() >= 100) {
         std::vector<std::thread> threads;
         const size_t num_threads = std::min(static_cast<size_t>(std::thread::hardware_concurrency()), static_cast<size_t>(4));
         const size_t rows_per_thread = A.shape()[0] / num_threads;
@@ -65,7 +64,7 @@ Tensor<T> transpose(const Tensor<T>& A) {
                 
                 for (size_t r = start_row; r < end_row; ++r) {
                     for (size_t c = 0; c < A.shape()[1]; ++c) {
-                        T(c, r) = A(r, c);
+                        result(c, r) = A(r, c);
                     }
                 }
             });
@@ -78,12 +77,12 @@ Tensor<T> transpose(const Tensor<T>& A) {
         // Sequential implementation for smaller tensors
         for (size_t r = 0; r < A.shape()[0]; ++r) {
             for (size_t c = 0; c < A.shape()[1]; ++c) {
-                T(c, r) = A(r, c);
+                result(c, r) = A(r, c);
             }
         }
     }
     
-    return T;
+    return result;
 }
 
 // Matrix multiplication
@@ -194,8 +193,7 @@ void add_rowwise_inplace(Tensor<T>& A, const Tensor<T>& rowvec) {
         throw InvalidOperation("add_rowwise_inplace: row vector must have shape (1, A.cols)");
     }
     
-    A.ensure_unique(); // Ensure unique ownership before modifying
-    T* A_data = A.data();
+    T* A_data = A.mutable_data();
     const T* rowvec_data = rowvec.data();
     
     // Use parallel execution for larger tensors
@@ -698,11 +696,7 @@ Tensor<T> sum_rows(const Tensor<T>& A) {
 }
 
 // Explicit template instantiations for common types
-template std::vector<size_t> compute_broadcast_shape<float>(const std::vector<size_t>& shape1, const std::vector<size_t>& shape2);
-template std::vector<size_t> compute_broadcast_shape<double>(const std::vector<size_t>& shape1, const std::vector<size_t>& shape2);
-template std::vector<size_t> compute_broadcast_shape<int>(const std::vector<size_t>& shape1, const std::vector<size_t>& shape2);
-template std::vector<size_t> compute_broadcast_shape<long>(const std::vector<size_t>& shape1, const std::vector<size_t>& shape2);
-template std::vector<size_t> compute_broadcast_shape<bool>(const std::vector<size_t>& shape1, const std::vector<size_t>& shape2);
+// No template instantiation needed for compute_broadcast_shape since it's not a template function
 
 template TensorF transpose(const TensorF& A);
 template TensorD transpose(const TensorD& A);
